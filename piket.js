@@ -305,7 +305,7 @@ async function startScanner() {
     }
     try {
         cameras = await Html5Qrcode.getCameras();
-        const source = cameras.length ? cameras[cameraIndex % cameras.length].id : { facingMode: "environment" };
+        const source = cameras.length ? cameras.find(camera => /back|rear|environment/i.test(camera.label))?.id || cameras[cameras.length - 1].id : { facingMode: "environment" };
         scanner = new Html5Qrcode("reader");
         await scanner.start(source, { fps: 10, aspectRatio: 1 }, decodedText => processTicketCode(decodedText), () => {});
         cameraRunning = true;
@@ -321,17 +321,16 @@ async function processTicketCode(rawValue) {
     if (scanBusy || !scanner) return;
     scanBusy = true;
     const code = String(rawValue || "").trim().toUpperCase();
-    if (!/^OSISSMAMWPLG-TIKET-[0-9]+$/.test(code)) {
+    if (!/^OSISSMAMWPLG-TIKET-(00[1-9]|0[1-8][0-9]|090)$/.test(code)) {
         showMessage("scan-message", "QR code tidak valid. Pastikan QR berisi kode seperti TIKET-001.", "error");
         scanBusy = false;
         return;
     }
     showMessage("scan-message", "Memeriksa tiket...", "");
     try {
-        const { data, error } = await supabase.from("tickets").select("id,code,status,used_at").eq("code", code).maybeSingle();
+        const { data, error } = await supabase.rpc("check_ticket_availability", { p_ticket_code: code });
         if (error) throw error;
-        if (!data) throw new Error("Tiket tidak terdaftar di database.");
-        if (data.status !== "active" || data.used_at) throw new Error("Tiket ini sudah digunakan atau tidak aktif.");
+        if (!data || !data.valid) throw new Error(data?.message || "Tiket tidak tersedia.");
         currentTicket = data;
         await stopScanner();
         const { data: studentRows, error: studentError } = await supabase.from("students").select("id,name,nis,class").eq("active", true).order("name", { ascending: true });
