@@ -98,7 +98,7 @@ function renderScan() {
                 </div>
                 <div class="app-form-group">
                     <label for="student-search">Cari Nama Siswa</label>
-                    <input type="search" id="student-search" placeholder="Cari nama atau NIS..." autocomplete="off">
+                    <input type="search" id="student-search" placeholder="Cari nama siswa..." autocomplete="off">
                 </div>
                 <div class="app-form-group">
                     <label for="student-id">Nama Siswa <span class="app-required">*</span></label>
@@ -217,7 +217,7 @@ function lastSevenDays() {
 
 async function getProfile() {
     if (!session) return null;
-    const { data, error } = await supabase.from("profiles").select("id,full_name,role,active").eq("id", session.user.id).single();
+    const { data, error } = await supabase.from("accounts").select("id,full_name,role,active").eq("id", session.user.id).single();
     if (error) throw error;
     if (!data.active) throw new Error("Akun ini dinonaktifkan. Hubungi administrator.");
     return data;
@@ -321,19 +321,20 @@ async function processTicketCode(rawValue) {
     if (scanBusy || !scanner) return;
     scanBusy = true;
     const code = String(rawValue || "").trim().toUpperCase();
-    if (!/^OSISSMAMWPLG-TIKET-(00[1-9]|0[1-8][0-9]|090)$/.test(code)) {
-        showMessage("scan-message", "QR code tidak valid. Pastikan QR berisi kode seperti TIKET-001.", "error");
+    const ticketCode = code.replace(/\D/g, "").slice(-3);
+    if (!/^\d{3}$/.test(ticketCode)) {
+        showMessage("scan-message", "QR code tidak valid. Pastikan QR berisi kode tiket seperti TIKET-001.", "error");
         scanBusy = false;
         return;
     }
     showMessage("scan-message", "Memeriksa tiket...", "");
     try {
-        const { data, error } = await supabase.rpc("check_ticket_availability", { p_ticket_code: code });
+        const { data, error } = await supabase.rpc("check_ticket_availability", { p_ticket_code: ticketCode });
         if (error) throw error;
         if (!data || !data.valid) throw new Error(data?.message || "Tiket tidak tersedia.");
         currentTicket = data;
         await stopScanner();
-        const { data: studentRows, error: studentError } = await supabase.from("students").select("id,name,nis,class").eq("active", true).order("name", { ascending: true });
+        const { data: studentRows, error: studentError } = await supabase.from("students").select("id,full_name,class").eq("active", true).order("full_name", { ascending: true });
         if (studentError) throw studentError;
         students = studentRows || [];
         if (!students.length) throw new Error("Data siswa belum tersedia. Minta administrator mengisi tabel students.");
@@ -365,8 +366,8 @@ function filterStudents() {
     const query = (document.getElementById("student-search")?.value || "").trim().toLocaleLowerCase("id");
     const select = document.getElementById("student-id");
     if (!select) return;
-    const filtered = students.filter(student => (!classValue || student.class === classValue) && (!query || `${student.name} ${student.nis}`.toLocaleLowerCase("id").includes(query)));
-    select.innerHTML = `<option value="">Pilih siswa (${filtered.length})</option>${filtered.map(student => `<option value="${escapeHTML(student.id)}">${escapeHTML(student.name)} — ${escapeHTML(student.nis)} (${escapeHTML(student.class)})</option>`).join("")}`;
+    const filtered = students.filter(student => (!classValue || student.class === classValue) && (!query || student.full_name.toLocaleLowerCase("id").includes(query)));
+    select.innerHTML = `<option value="">Pilih siswa (${filtered.length})</option>${filtered.map(student => `<option value="${escapeHTML(student.id)}">${escapeHTML(student.full_name)} (${escapeHTML(student.class)})</option>`).join("")}`;
 }
 
 async function switchCamera() {
@@ -406,7 +407,7 @@ async function saveRecord(form) {
         await stopScanner();
         document.getElementById("record-panel").hidden = true;
         document.getElementById("scan-success").hidden = false;
-        document.getElementById("success-detail").textContent = `${selectedStudent?.name || "Siswa"} — ${selectedStudent?.class || ""} — ${currentTicket.code}`;
+        document.getElementById("success-detail").textContent = `${selectedStudent?.full_name || "Siswa"} — ${selectedStudent?.class || ""} — ${currentTicket.code}. Tiket dapat digunakan kembali setelah pukul 00.00 WIB.`;
         currentTicket = null;
     } catch (error) {
         showMessage("record-message", error.message || "Data gagal disimpan.", "error");
@@ -422,7 +423,7 @@ async function loadOverview() {
     try {
         const [statsResult, recordsResult] = await Promise.all([
             supabase.rpc("get_late_statistics"),
-            supabase.from("late_records").select("id,reason,created_at,tickets(code),students(name,nis,class),profiles(full_name)").order("created_at", { ascending: false }).limit(12)
+            supabase.from("late_records").select("id,ticket_id,student_full_name,student_class,reason,recorder_name,created_at").order("created_at", { ascending: false }).limit(12)
         ]);
         if (statsResult.error) throw statsResult.error;
         if (recordsResult.error) throw recordsResult.error;
@@ -460,10 +461,7 @@ function renderRecentRecords(records) {
         return;
     }
     tbody.innerHTML = records.map(record => {
-        const ticket = Array.isArray(record.tickets) ? record.tickets[0] : record.tickets;
-        const student = Array.isArray(record.students) ? record.students[0] : record.students;
-        const recorder = Array.isArray(record.profiles) ? record.profiles[0] : record.profiles;
-        return `<tr><td>${escapeHTML(formatDateTime(record.created_at))}</td><td>${escapeHTML(ticket?.code || "—")}</td><td>${escapeHTML(student?.name || "—")}<br><span class="app-muted">${escapeHTML(student?.nis || "")}</span></td><td>${escapeHTML(student?.class || "—")}</td><td><span class="app-record-note">${escapeHTML(record.reason || "—")}</span></td><td>${escapeHTML(recorder?.full_name || "—")}</td></tr>`;
+        return `<tr><td>${escapeHTML(formatDateTime(record.created_at))}</td><td>${escapeHTML(record.ticket_id || "—")}</td><td>${escapeHTML(record.student_full_name || "—")}</td><td>${escapeHTML(record.student_class || "—")}</td><td><span class="app-record-note">${escapeHTML(record.reason || "—")}</span></td><td>${escapeHTML(record.recorder_name || "—")}</td></tr>`;
     }).join("");
 }
 
