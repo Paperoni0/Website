@@ -2,75 +2,132 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const SUPABASE_URL = "https://tdyplxixwuwxcsacreiv.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_ZeZpLP-uFkWVUCRgnCOFnw_jOcf4JQS";
-const isConfigured = SUPABASE_URL.startsWith("https://") && !SUPABASE_URL.includes("YOUR_PROJECT_ID") && SUPABASE_ANON_KEY.length > 30 && !SUPABASE_ANON_KEY.includes("YOUR_SUPABASE_ANON_KEY");
-const supabase = isConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
-const page = document.getElementById("page");
-let session = null;
-let profile = null;
-let scanner = null;
-let cameras = [];
-let cameraIndex = 0;
-let cameraRunning = false;
-let torchOn = false;
-let scanBusy = false;
-let currentTicket = null;
-let students = [];
-let navigationId = 0;
+const QR_LIB = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+const PAGE_SIZE = 25;
+const CAM_READY = '<i class="app-dot"></i> Kamera aktif. Menunggu QR code...';
 
-function escapeHTML(value) {
-    return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: "pkce" }
+});
+
+const page = document.getElementById("page");
+const $ = id => document.getElementById(id);
+
+let session = null, profile = null, recovering = false, flash = null, navId = 0;
+let scanner = null, cameraRunning = false, torchOn = false, scanBusy = false, scanMsgTimer = null;
+let currentTicket = null, scanPicker = null, openPicker = null, editing = null;
+let students = [], studentsReq = null;
+const badCodes = new Map();
+const rec = { search: "", range: "all", page: 0, total: 0, rows: [], req: 0 };
+let qrLibReq = null, toastTimer = null;
+
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const isAdmin = () => profile?.role === "admin";
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const num = v => Number(v || 0).toLocaleString("id-ID");
+
+class UserError extends Error {}
+
+function errText(error, fallback = "Terjadi kesalahan. Silakan coba lagi.") {
+    if (error instanceof UserError) return error.message;
+    if (error?.code === "P0001" && error.message) return error.message;
+    if (/failed to fetch|networkerror|load failed/i.test(error?.message || "")) return "Tidak ada koneksi internet. Periksa jaringan Anda.";
+    return fallback;
 }
 
-function renderLogin(message = "") {
+function showMessage(id, text, type = "") {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text || "";
+    el.className = `app-message ${type}`.trim();
+    el.hidden = !text;
+}
+
+function toast(text, type = "") {
+    const el = $("toast");
+    el.textContent = text;
+    el.className = `toast ${type}`.trim();
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 3500);
+}
+
+function formatDateTime(v) {
+    return v ? new Date(v).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" }) : "—";
+}
+
+function setBusy(button, busy, label) {
+    if (!button) return;
+    if (busy) { button.dataset.label = button.textContent; button.textContent = label; }
+    else button.textContent = button.dataset.label || button.textContent;
+    button.disabled = busy;
+}
+
+function msgBox(id, m) {
+    return `<div id="${id}" class="app-message ${m?.type || ""}" role="alert" ${m ? "" : "hidden"}>${esc(m?.text)}</div>`;
+}
+
+function renderLogin(m) {
     return `
-    <main class="app-page app-page-center">
-        <div class="app-card">
-            <div class="app-card-body">
-                <h1 class="app-title">Masuk</h1>
-                <div class="app-double-line"></div>
-                <p class="app-description">Silakan masuk untuk mengakses sistem piket keterlambatan OSIS SMA Maitreyawira Palembang.</p>
-                ${message ? `<div class="app-message ${message.type || ""}" role="alert">${escapeHTML(message.text)}</div>` : ""}
-                ${!isConfigured ? `<div class="app-message error" role="alert">Konfigurasi Supabase belum diisi. Masukkan Project URL dan anon key pada bagian atas piket.js.</div>` : ""}
-                <form id="login-form">
-                    <div class="app-form-group">
-                        <label for="login-email">Email <span class="app-required">*</span></label>
-                        <input type="email" id="login-email" name="email" placeholder="Masukkan email" required autocomplete="username" ${!isConfigured ? "disabled" : ""}>
-                    </div>
-                    <div class="app-form-group">
-                        <label for="login-password">Password <span class="app-required">*</span></label>
-                        <input type="password" id="login-password" name="password" placeholder="Masukkan password" required autocomplete="current-password" ${!isConfigured ? "disabled" : ""}>
-                    </div>
-                    <div class="app-form-options">
-                        <span class="app-muted">Gunakan akun yang dibuat oleh admin.</span>
-                        <a href="#" id="forgot-password">Lupa password?</a>
-                    </div>
-                    <button type="submit" class="app-button app-button-primary app-button-full" ${!isConfigured ? "disabled" : ""}>Masuk</button>
-                </form>
-            </div>
-        </div>
-    </main>`;
+    <main class="app-page app-page-center"><div class="app-card"><div class="app-card-body">
+        <h1 class="app-title">Masuk</h1><div class="app-double-line"></div>
+        <p class="app-description">Silakan masuk untuk mengakses sistem piket keterlambatan OSIS SMA Maitreyawira Palembang.</p>
+        ${msgBox("login-message", m)}
+        <form id="login-form">
+            <div class="app-form-group"><label for="login-email">Email <span class="app-required">*</span></label>
+                <input type="email" id="login-email" name="email" placeholder="Masukkan email" required autocomplete="username"></div>
+            <div class="app-form-group"><label for="login-password">Password <span class="app-required">*</span></label>
+                <input type="password" id="login-password" name="password" placeholder="Masukkan password" required autocomplete="current-password"></div>
+            <div class="app-form-options"><span class="app-muted">Gunakan akun yang dibuat oleh admin.</span><a href="#forgot">Lupa password?</a></div>
+            <button type="submit" class="app-button app-button-primary app-button-full">Masuk</button>
+        </form>
+    </div></div></main>`;
+}
+
+function renderForgot(m) {
+    return `
+    <main class="app-page app-page-center"><div class="app-card"><div class="app-card-body">
+        <h1 class="app-title">Lupa Password</h1><div class="app-double-line"></div>
+        <p class="app-description">Masukkan email akun Anda. Kami akan mengirim tautan untuk membuat password baru.</p>
+        ${msgBox("forgot-message", m)}
+        <form id="forgot-form">
+            <div class="app-form-group"><label for="forgot-email">Email <span class="app-required">*</span></label>
+                <input type="email" id="forgot-email" name="email" placeholder="Masukkan email" required autocomplete="username"></div>
+            <button type="submit" class="app-button app-button-primary app-button-full">Kirim Tautan</button>
+            <p class="app-form-options" style="margin:16px 0 0"><a href="#login">&larr; Kembali ke halaman masuk</a></p>
+        </form>
+    </div></div></main>`;
+}
+
+function renderReset() {
+    return `
+    <main class="app-page app-page-center"><div class="app-card"><div class="app-card-body">
+        <h1 class="app-title">Password Baru</h1><div class="app-double-line"></div>
+        <p class="app-description">Buat password baru untuk akun Anda. Minimal 8 karakter.</p>
+        ${msgBox("reset-message")}
+        <form id="reset-form">
+            <div class="app-form-group"><label for="new-password">Password baru <span class="app-required">*</span></label>
+                <input type="password" id="new-password" name="password" minlength="8" required autocomplete="new-password"></div>
+            <div class="app-form-group"><label for="confirm-password">Ulangi password <span class="app-required">*</span></label>
+                <input type="password" id="confirm-password" name="confirm" minlength="8" required autocomplete="new-password"></div>
+            <button type="submit" class="app-button app-button-primary app-button-full">Simpan Password</button>
+        </form>
+    </div></div></main>`;
 }
 
 function renderScan() {
     return `
-    <section class="app-hero">
-        <div class="app-container">
-            <h1 class="app-title">Scan Tiket</h1>
-            <div class="app-double-line"></div>
-            <p class="app-hero-description">Scan QR code pada tiket keterlambatan untuk mencatat data siswa.</p>
-        </div>
-    </section>
+    <section class="app-hero"><div class="app-container">
+        <h1 class="app-title">Scan Tiket</h1><div class="app-double-line"></div>
+        <p class="app-hero-description">Scan QR code pada tiket keterlambatan untuk mencatat data siswa.</p>
+    </div></section>
     <main class="app-container app-narrow app-scan-main">
         <section class="app-panel" id="scan-panel">
-            <h2 class="app-panel-title">Langkah 1 — Scan QR Code</h2>
-            <div class="app-double-line"></div>
+            <h2 class="app-panel-title">Langkah 1 — Scan QR Code</h2><div class="app-double-line"></div>
             <div class="app-viewfinder">
                 <div id="reader"></div>
                 <div class="app-frame">
-                    <span class="app-corner tl"></span>
-                    <span class="app-corner tr"></span>
-                    <span class="app-corner bl"></span>
-                    <span class="app-corner br"></span>
+                    <span class="app-corner tl"></span><span class="app-corner tr"></span><span class="app-corner bl"></span><span class="app-corner br"></span>
                     <span class="app-scan-line"></span>
                 </div>
                 <p class="app-cam-status" id="camera-status"><i class="app-dot"></i> Menyiapkan kamera...</p>
@@ -78,38 +135,21 @@ function renderScan() {
             <p class="app-scan-hint">Arahkan kamera ke QR code pada tiket. Pastikan QR code berada di dalam kotak dan pencahayaan cukup.</p>
             <div class="app-button-row">
                 <button type="button" class="app-button app-button-outline" id="btn-switch">Ganti Kamera</button>
-                <button type="button" class="app-button app-button-outline" id="btn-torch">Senter</button>
+                <button type="button" class="app-button app-button-outline" id="btn-torch" hidden>Senter</button>
             </div>
-            <div id="scan-message" class="app-message" role="status" hidden></div>
+            <div id="scan-message" class="app-message" role="status" hidden style="margin-top:16px"></div>
         </section>
         <section class="app-panel" id="record-panel" hidden>
-            <h2 class="app-panel-title">Langkah 2 — Data Keterlambatan</h2>
-            <div class="app-double-line"></div>
-            <div class="app-ticket-badge">
-                <span class="app-ticket-check">&#10003;</span>
-                <div><small>Tiket terdeteksi dan valid</small><b id="ticket-label">TIKET-000</b></div>
-            </div>
+            <h2 class="app-panel-title">Langkah 2 — Data Keterlambatan</h2><div class="app-double-line"></div>
+            <div class="app-ticket-badge"><span class="app-ticket-check">&#10003;</span>
+                <div><small>Tiket terdeteksi dan valid</small><b id="ticket-label">TIKET-000</b></div></div>
             <form id="record-form">
-                <div class="app-form-group">
-                    <label for="student-class">Kelas <span class="app-required">*</span></label>
-                    <select id="student-class" name="student_class" required>
-                        <option value="">Pilih kelas</option>
-                    </select>
-                </div>
-                <div class="app-form-group">
-                    <label for="student-search">Cari Nama Siswa</label>
-                    <input type="search" id="student-search" placeholder="Cari nama siswa..." autocomplete="off">
-                </div>
-                <div class="app-form-group">
-                    <label for="student-id">Nama Siswa <span class="app-required">*</span></label>
-                    <select id="student-id" name="student_id" required>
-                        <option value="">Pilih siswa</option>
-                    </select>
-                </div>
-                <div class="app-form-group">
-                    <label for="late-reason">Alasan Terlambat <span class="app-required">*</span></label>
-                    <textarea id="late-reason" name="reason" rows="4" minlength="3" maxlength="1000" placeholder="Contoh: Macet di jalan, kendaraan mogok..." required></textarea>
-                </div>
+                <div class="app-form-group"><label for="student-class">Filter kelas</label>
+                    <select id="student-class"><option value="">Semua kelas</option></select></div>
+                <div class="app-form-group"><label>Nama Siswa <span class="app-required">*</span></label>
+                    <div id="student-picker"></div></div>
+                <div class="app-form-group"><label for="late-reason">Alasan Terlambat <span class="app-required">*</span></label>
+                    <textarea id="late-reason" name="reason" rows="4" minlength="3" maxlength="1000" placeholder="Contoh: Macet di jalan, kendaraan mogok..." required></textarea></div>
                 <div id="record-message" class="app-message" role="status" hidden></div>
                 <div class="app-button-row">
                     <button type="button" class="app-button app-button-outline" id="rescan-button">Scan Ulang</button>
@@ -118,11 +158,8 @@ function renderScan() {
             </form>
         </section>
         <section class="app-panel" id="scan-success" hidden>
-            <div class="app-success">
-                <span class="app-success-icon">&#10003;</span>
-                <h2>Data Berhasil Disimpan</h2>
-                <p id="success-detail"></p>
-            </div>
+            <div class="app-success"><span class="app-success-icon">&#10003;</span>
+                <h2>Data Berhasil Disimpan</h2><p id="success-detail"></p></div>
             <div class="app-button-row" style="margin-top:18px">
                 <button type="button" class="app-button app-button-outline" id="next-scan-button">Scan Tiket Berikutnya</button>
                 <a href="#overview" class="app-button app-button-primary">Lihat Dashboard</a>
@@ -132,438 +169,588 @@ function renderScan() {
 }
 
 function renderOverview() {
+    const admin = isAdmin();
     return `
-    <section class="app-hero">
-        <div class="app-container">
-            <h1 class="app-title">Dashboard Piket</h1>
-            <div class="app-double-line"></div>
-            <p class="app-hero-description">Ringkasan dan statistik data keterlambatan siswa.</p>
-        </div>
-    </section>
+    <section class="app-hero"><div class="app-container">
+        <h1 class="app-title">Dashboard Piket</h1><div class="app-double-line"></div>
+        <p class="app-hero-description">${admin ? "Ringkasan dan statistik data keterlambatan siswa." : "Statistik keterlambatan dan data yang Anda catat."}</p>
+    </div></section>
     <main class="app-container app-page" style="min-height:0;padding-top:0">
+        <section class="app-cta">
+            <div><h2>Catat keterlambatan</h2><p>Scan QR code pada tiket untuk mencatat siswa yang terlambat.</p></div>
+            <a href="#scan" class="app-button app-button-primary">Scan Tiket</a>
+        </section>
         <div id="overview-message" class="app-message" role="status" hidden></div>
         <section class="app-stats-grid">
-            <article class="app-stat-card"><span class="app-stat-label">Keterlambatan Hari Ini</span><strong class="app-stat-value" id="stat-today">—</strong></article>
+            <article class="app-stat-card"><span class="app-stat-label">Hari Ini</span><strong class="app-stat-value" id="stat-today">—</strong></article>
+            <article class="app-stat-card"><span class="app-stat-label">Minggu Ini</span><strong class="app-stat-value" id="stat-week">—</strong></article>
             <article class="app-stat-card"><span class="app-stat-label">Bulan Ini</span><strong class="app-stat-value" id="stat-month">—</strong></article>
             <article class="app-stat-card"><span class="app-stat-label">Total Data</span><strong class="app-stat-value" id="stat-total">—</strong></article>
         </section>
         <div class="app-dashboard-grid">
+            <section class="app-panel"><h2 class="app-panel-title">7 Hari Terakhir</h2><div class="app-double-line"></div>
+                <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat...</p></div></section>
+            <section class="app-panel"><h2 class="app-panel-title">Kelas Terbanyak (30 Hari)</h2><div class="app-double-line"></div>
+                <div id="class-chart"><p class="app-empty">Memuat...</p></div></section>
+            <section class="app-panel ${admin ? "" : "app-span-all"}"><h2 class="app-panel-title">Jam Keterlambatan (30 Hari)</h2><div class="app-double-line"></div>
+                <div class="app-chart" id="hour-chart"><p class="app-empty">Memuat...</p></div></section>
+            ${admin ? `
             <section class="app-panel">
-                <h2 class="app-panel-title">Statistik 7 Hari Terakhir</h2>
-                <div class="app-double-line"></div>
-                <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat statistik...</p></div>
-            </section>
-            <section class="app-panel">
-                <h2 class="app-panel-title">Informasi</h2>
-                <div class="app-double-line"></div>
-                <p>Gunakan menu <b>Scan Tiket</b> untuk memindai QR code dan mencatat keterlambatan siswa.</p>
-                <p class="app-muted" style="margin-top:12px">Data pada dashboard diperbarui dari database saat halaman dibuka atau tombol perbarui ditekan.</p>
-                <a href="#scan" class="app-button app-button-primary" style="margin-top:18px">Mulai Scan</a>
-            </section>
+                <div class="app-section-heading"><h2>Paling Sering Terlambat</h2>
+                    <select id="lb-period" class="mini-select" aria-label="Periode"><option value="month">Bulan ini</option><option value="all">Semua waktu</option></select></div>
+                <div id="leaderboard"><p class="app-empty">Memuat...</p></div>
+            </section>` : ""}
         </div>
         <section class="app-panel">
             <div class="app-section-heading">
-                <h2>Data Keterlambatan Terbaru</h2>
+                <h2>${admin ? "Data Keterlambatan" : "Data yang Saya Catat"}</h2>
                 <button type="button" class="app-button app-button-outline" id="refresh-overview">Perbarui</button>
             </div>
-            <div class="app-table-wrap">
-                <table class="app-table">
-                    <thead><tr><th>Waktu</th><th>Tiket</th><th>Nama Siswa</th><th>Kelas</th><th>Alasan</th><th>Petugas</th></tr></thead>
-                    <tbody id="recent-records"><tr><td colspan="6" class="app-empty">Memuat data...</td></tr></tbody>
-                </table>
+            <div class="toolbar">
+                <input type="search" id="rec-search" placeholder="Cari nama, kelas, atau alasan..." aria-label="Cari data" autocomplete="off">
+                <select id="rec-range" aria-label="Periode">
+                    <option value="all">Semua waktu</option><option value="today">Hari ini</option>
+                    <option value="week">Minggu ini</option><option value="month">Bulan ini</option>
+                </select>
+            </div>
+            <div class="app-table-wrap"><table class="app-table">
+                <thead><tr><th>Waktu</th><th>Tiket</th><th>Nama Siswa</th><th>Kelas</th><th>Alasan</th>${admin ? "<th>Petugas</th>" : ""}<th></th></tr></thead>
+                <tbody id="recent-records"><tr><td colspan="${admin ? 7 : 6}" class="app-empty">Memuat data...</td></tr></tbody>
+            </table></div>
+            <div class="pager">
+                <span class="app-muted" id="pager-info"></span>
+                <div class="pager-btns">
+                    <button type="button" class="app-button app-button-outline app-button-small" id="pg-prev" disabled>Sebelumnya</button>
+                    <span class="app-muted" id="pager-page"></span>
+                    <button type="button" class="app-button app-button-outline app-button-small" id="pg-next" disabled>Berikutnya</button>
+                </div>
             </div>
         </section>
     </main>`;
 }
 
 function setHeader() {
-    document.querySelectorAll(".auth-link").forEach(element => element.hidden = !session);
-    document.querySelectorAll(".guest-link").forEach(element => element.hidden = !!session);
-    const account = document.getElementById("header-account");
-    account.hidden = !session;
-    document.getElementById("account-name").textContent = profile?.full_name || session?.user?.email || "Petugas";
-    document.getElementById("menu-toggle").checked = false;
+    document.querySelectorAll(".auth-link").forEach(el => { el.hidden = !session; });
+    document.querySelectorAll(".guest-link").forEach(el => { el.hidden = !!session; });
+    $("header-account").hidden = !session;
+    $("account-name").textContent = profile?.full_name || session?.user?.email || "Petugas";
+    $("menu-toggle").checked = false;
 }
 
-function showMessage(elementId, message, type = "") {
-    const element = document.getElementById(elementId);
-    if (!element) return;
-    element.textContent = message;
-    element.className = `app-message ${type}`.trim();
-    element.hidden = !message;
-}
-
-function jakartaDateKey(date = new Date()) {
-    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
-    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day}`;
-}
-
-function formatDateTime(value) {
-    if (!value) return "—";
-    return new Date(value).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" });
-}
-
-function lastSevenDays() {
-    const today = jakartaDateKey();
-    const base = new Date(`${today}T00:00:00+07:00`);
-    return Array.from({ length: 7 }, (_, index) => {
-        const date = new Date(base);
-        date.setUTCDate(date.getUTCDate() - (6 - index));
-        const key = date.toISOString().slice(0, 10);
-        return { key, label: new Date(`${key}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }) };
-    });
-}
+const PUBLIC_ROUTES = ["login", "forgot"];
+const ROUTES = ["login", "forgot", "reset", "scan", "overview"];
+const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null, "", `#${r}`); };
 
 async function getProfile() {
-    if (!session) return null;
+    if (profile && profile.id === session.user.id) return profile;
     const { data, error } = await supabase.from("accounts").select("id,full_name,role,active").eq("id", session.user.id).single();
-    if (error) throw error;
-    if (!data.active) throw new Error("Akun ini dinonaktifkan. Hubungi administrator.");
+    if (error || !data) throw new UserError("Akun tidak memiliki akses ke sistem.");
+    if (!data.active) throw new UserError("Akun ini dinonaktifkan. Hubungi administrator.");
     return data;
 }
 
-async function stopScanner() {
-    scanBusy = false;
-    torchOn = false;
-    if (scanner) {
-        try {
-            if (cameraRunning) await scanner.stop();
-        } catch (error) {
-            console.warn(error);
-        }
-        try {
-            await scanner.clear();
-        } catch (error) {
-            console.warn(error);
-        }
-    }
-    scanner = null;
-    cameraRunning = false;
-}
-
 async function navigate() {
-    const runId = ++navigationId;
-    const requested = location.hash.slice(1) || "login";
-    let route = ["login", "scan", "overview"].includes(requested) ? requested : "login";
-    if (!isConfigured) {
-        await stopScanner();
-        page.innerHTML = renderLogin();
-        setHeader();
-        return;
-    }
-    if (!session && route !== "login") {
-        location.hash = "#login";
-        route = "login";
-    }
-    if (session) {
+    const run = ++navId;
+    let route = location.hash.slice(1);
+    if (!ROUTES.includes(route)) route = session ? "overview" : "login";
+
+    if (!session) {
+        profile = null;
+        if (!PUBLIC_ROUTES.includes(route)) route = "login";
+    } else {
         try {
             profile = await getProfile();
         } catch (error) {
-            await supabase.auth.signOut();
-            session = null;
             profile = null;
-            route = "login";
-            if (location.hash !== "#login") location.hash = "#login";
-            if (runId !== navigationId) return;
-            page.innerHTML = renderLogin({ text: error.message || "Akun tidak memiliki akses ke sistem.", type: "error" });
-            setHeader();
+            flash = { text: errText(error, "Akun tidak memiliki akses ke sistem."), type: "error" };
+            await supabase.auth.signOut();
             return;
         }
-        if (route === "login") {
-            location.hash = "#overview";
-            route = "overview";
-        }
-    } else {
-        profile = null;
+        if (run !== navId) return;
+        if (recovering) route = "reset";
+        else if (PUBLIC_ROUTES.includes(route)) route = "overview";
     }
+    setHash(route);
+
     if (route !== "scan") await stopScanner();
-    if (runId !== navigationId) return;
+    if (run !== navId) return;
     setHeader();
-    if (route === "login") {
-        page.innerHTML = renderLogin();
-        return;
-    }
-    if (route === "overview") {
+
+    const m = flash; flash = null;
+    if (route === "login") page.innerHTML = renderLogin(m);
+    else if (route === "forgot") page.innerHTML = renderForgot(m);
+    else if (route === "reset") page.innerHTML = renderReset();
+    else if (route === "overview") {
+        Object.assign(rec, { search: "", range: "all", page: 0, total: 0, rows: [] });
         page.innerHTML = renderOverview();
         loadOverview();
-        return;
+    } else {
+        currentTicket = null;
+        scanPicker = null;
+        page.innerHTML = renderScan();
+        startScanner();
+        loadStudents().catch(() => {});
     }
-    currentTicket = null;
-    students = [];
-    page.innerHTML = renderScan();
-    startScanner();
 }
 
-async function startScanner() {
-    const status = document.getElementById("camera-status");
-    const reader = document.getElementById("reader");
-    if (!status || !reader) return;
-    if (!window.Html5Qrcode) {
-        status.textContent = "Library pemindai QR tidak berhasil dimuat.";
-        return;
+function loadStudents() {
+    if (students.length) return Promise.resolve(students);
+    return studentsReq ||= (async () => {
+        try {
+            const { data, error } = await supabase.from("students").select("id,full_name,class").eq("active", true).order("full_name", { ascending: true });
+            if (error) throw error;
+            students = (data || []).map(s => ({ ...s, _q: `${s.full_name} ${s.class}`.toLocaleLowerCase("id") }));
+            return students;
+        } finally { studentsReq = null; }
+    })();
+}
+
+const initials = name => name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+
+function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" } = {}) {
+    root.innerHTML = `
+    <div class="picker">
+        <button type="button" class="picker-btn" aria-haspopup="listbox" aria-expanded="false">
+            <span class="picker-label placeholder">${esc(placeholder)}</span><i class="picker-caret"></i>
+        </button>
+        <div class="picker-pop" hidden>
+            <input type="search" class="picker-search" placeholder="Cari nama siswa..." autocomplete="off" aria-label="Cari nama siswa">
+            <ul class="picker-list" role="listbox"></ul>
+        </div>
+    </div>`;
+    const btn = root.querySelector(".picker-btn"), label = root.querySelector(".picker-label");
+    const pop = root.querySelector(".picker-pop"), search = root.querySelector(".picker-search"), list = root.querySelector(".picker-list");
+    let value = null, active = 0, items = [];
+    const byId = id => students.find(s => s.id === id);
+
+    function render() {
+        const cls = getClass(), q = search.value.trim().toLocaleLowerCase("id");
+        items = students.filter(s => (!cls || s.class === cls) && (!q || s._q.includes(q)));
+        const shown = items.slice(0, 80);
+        active = Math.min(active, Math.max(shown.length - 1, 0));
+        list.innerHTML = shown.length
+            ? shown.map((s, i) => `<li role="option" data-id="${esc(s.id)}" aria-selected="${s.id === value}" class="${i === active ? "active" : ""}${s.id === value ? " selected" : ""}">
+                <span class="picker-avatar">${esc(initials(s.full_name))}</span><span class="picker-name">${esc(s.full_name)}</span><span class="picker-class">${esc(s.class)}</span></li>`).join("")
+              + (items.length > 80 ? `<li class="picker-more">Menampilkan 80 dari ${items.length}. Ketik untuk mempersempit.</li>` : "")
+            : `<li class="picker-empty">Siswa tidak ditemukan</li>`;
     }
+    function setActive(i) {
+        const lis = list.querySelectorAll("li[data-id]");
+        if (!lis.length) return;
+        active = (i + lis.length) % lis.length;
+        lis.forEach((li, k) => li.classList.toggle("active", k === active));
+        lis[active].scrollIntoView({ block: "nearest" });
+    }
+    function pick(s) {
+        if (!s) return;
+        value = s.id;
+        label.textContent = `${s.full_name} (${s.class})`;
+        label.classList.remove("placeholder");
+        api.close();
+    }
+    const api = {
+        root,
+        get value() { return value; },
+        set(id) { const s = byId(id); if (s) pick(s); },
+        clear() { value = null; label.textContent = placeholder; label.classList.add("placeholder"); },
+        refresh() { if (value && getClass() && byId(value)?.class !== getClass()) api.clear(); if (!pop.hidden) render(); },
+        open() {
+            if (openPicker && openPicker !== api) openPicker.close();
+            openPicker = api; pop.hidden = false; btn.setAttribute("aria-expanded", "true");
+            search.value = ""; active = 0; render(); search.focus({ preventScroll: true });
+        },
+        close() { pop.hidden = true; btn.setAttribute("aria-expanded", "false"); if (openPicker === api) openPicker = null; }
+    };
+    btn.addEventListener("click", () => (pop.hidden ? api.open() : api.close()));
+    search.addEventListener("input", () => { active = 0; render(); });
+    search.addEventListener("keydown", e => {
+        if (e.key === "ArrowDown") { e.preventDefault(); setActive(active + 1); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); setActive(active - 1); }
+        else if (e.key === "Enter") { e.preventDefault(); pick(items[active]); }
+        else if (e.key === "Escape") { e.stopPropagation(); api.close(); btn.focus(); }
+    });
+    list.addEventListener("click", e => { const li = e.target.closest("li[data-id]"); if (li) pick(byId(li.dataset.id)); });
+    return api;
+}
+
+function loadQrLib() {
+    if (window.Html5Qrcode) return Promise.resolve();
+    return qrLibReq ||= new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = QR_LIB;
+        s.onload = resolve;
+        s.onerror = () => { qrLibReq = null; reject(new UserError("Pemindai QR gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.")); };
+        document.head.append(s);
+    });
+}
+
+const videoTrack = () => document.querySelector("#reader video")?.srcObject?.getVideoTracks?.()[0];
+const setStatus = html => { const el = $("camera-status"); if (el) el.innerHTML = html; };
+
+async function startScanner(deviceId) {
+    if (!$("reader")) return;
     try {
-        cameras = await Html5Qrcode.getCameras();
-        const source = cameras.length ? cameras.find(camera => /back|rear|environment/i.test(camera.label))?.id || cameras[cameras.length - 1].id : { facingMode: "environment" };
-        scanner = new Html5Qrcode("reader");
-        await scanner.start(source, { fps: 10, aspectRatio: 1 }, decodedText => processTicketCode(decodedText), () => {});
+        await loadQrLib();
+        if (!$("reader")) return;
+        scanner = new Html5Qrcode("reader", { verbose: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], useBarCodeDetectorIfSupported: true });
+        const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" };
+        await scanner.start(source, { fps: 10, aspectRatio: 1 }, onDecode, () => {});
         cameraRunning = true;
-        status.innerHTML = '<i class="app-dot"></i> Kamera aktif. Menunggu QR code...';
+        setStatus(CAM_READY);
+        setTimeout(setupControls, 600);
     } catch (error) {
         console.error(error);
-        status.textContent = "Kamera tidak dapat diakses. Izinkan akses kamera dan gunakan HTTPS.";
-        showMessage("scan-message", error.message || "Periksa izin kamera pada browser.", "error");
+        scanner = null; cameraRunning = false;
+        setStatus("Kamera tidak aktif.");
+        showMessage("scan-message", error instanceof UserError ? error.message : "Kamera tidak dapat diakses. Izinkan akses kamera pada browser, lalu muat ulang halaman.", "error");
     }
 }
 
-async function processTicketCode(rawValue) {
+async function setupControls() {
+    const btn = $("btn-torch");
+    if (!btn) return;
+    btn.hidden = !videoTrack()?.getCapabilities?.().torch;
+    try { cameras = await Html5Qrcode.getCameras(); } catch { cameras = []; }
+}
+let cameras = [];
+
+async function stopScanner() {
+    scanBusy = false; torchOn = false;
+    const s = scanner;
+    scanner = null; cameraRunning = false;
+    if (!s) return;
+    try { await s.stop(); } catch (e) { /* already stopped */ }
+    try { s.clear(); } catch (e) { /* ignore */ }
+}
+
+function scanError(key, text) {
+    badCodes.set(key, Date.now() + 8000);
+    showMessage("scan-message", text, "error");
+    clearTimeout(scanMsgTimer);
+    scanMsgTimer = setTimeout(() => showMessage("scan-message", ""), 5000);
+}
+
+async function onDecode(raw) {
     if (scanBusy || !scanner) return;
+    const key = String(raw || "").trim().toUpperCase();
+    if ((badCodes.get(key) || 0) > Date.now()) return;
+    const ticketCode = key.replace(/\D/g, "").slice(-3);
+    if (!/^\d{3}$/.test(ticketCode)) return scanError(key, "QR code ini bukan tiket keterlambatan.");
+
     scanBusy = true;
-    const code = String(rawValue || "").trim().toUpperCase();
-    const ticketCode = code.replace(/\D/g, "").slice(-3);
-    if (!/^\d{3}$/.test(ticketCode)) {
-        showMessage("scan-message", "QR code tidak valid. Pastikan QR berisi kode tiket seperti TIKET-001.", "error");
-        scanBusy = false;
-        return;
-    }
-    showMessage("scan-message", "Memeriksa tiket...", "");
+    setStatus("Memeriksa tiket...");
     try {
         const { data, error } = await supabase.rpc("check_ticket_availability", { p_ticket_code: ticketCode });
         if (error) throw error;
-        if (!data || !data.valid) throw new Error(data?.message || "Tiket tidak tersedia.");
+        if (!data?.valid) throw new UserError(data?.message || "Tiket ini tidak tersedia.");
+        await loadStudents();
+        if (!students.length) throw new UserError("Data siswa belum tersedia. Hubungi administrator.");
         currentTicket = data;
         await stopScanner();
-        const { data: studentRows, error: studentError } = await supabase.from("students").select("id,full_name,class").eq("active", true).order("full_name", { ascending: true });
-        if (studentError) throw studentError;
-        students = studentRows || [];
-        if (!students.length) throw new Error("Data siswa belum tersedia. Minta administrator mengisi tabel students.");
-        document.getElementById("ticket-label").textContent = data.code;
-        document.getElementById("scan-panel").hidden = true;
-        document.getElementById("record-panel").hidden = false;
-        fillStudentClasses();
-        filterStudents();
+        showRecordPanel();
     } catch (error) {
         console.error(error);
-        showMessage("scan-message", error.message || "Tiket gagal diperiksa. Silakan coba lagi.", "error");
+        scanError(key, errText(error, "Tiket tidak dapat diperiksa. Silakan coba lagi."));
+        setStatus(CAM_READY);
         scanBusy = false;
-        if (!scanner && document.getElementById("scan-panel") && !document.getElementById("scan-panel").hidden) {
-            currentTicket = null;
-            startScanner();
-        }
     }
 }
 
-function fillStudentClasses() {
-    const select = document.getElementById("student-class");
-    if (!select) return;
-    const classes = [...new Set(students.map(student => student.class).filter(Boolean))].sort((a, b) => a.localeCompare(b, "id"));
-    select.innerHTML = `<option value="">Pilih kelas</option>${classes.map(value => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
-}
-
-function filterStudents() {
-    const classValue = document.getElementById("student-class")?.value || "";
-    const query = (document.getElementById("student-search")?.value || "").trim().toLocaleLowerCase("id");
-    const select = document.getElementById("student-id");
-    if (!select) return;
-    const filtered = students.filter(student => (!classValue || student.class === classValue) && (!query || student.full_name.toLocaleLowerCase("id").includes(query)));
-    select.innerHTML = `<option value="">Pilih siswa (${filtered.length})</option>${filtered.map(student => `<option value="${escapeHTML(student.id)}">${escapeHTML(student.full_name)} (${escapeHTML(student.class)})</option>`).join("")}`;
+function showRecordPanel() {
+    $("ticket-label").textContent = currentTicket.code;
+    $("scan-panel").hidden = true;
+    $("record-panel").hidden = false;
+    const classes = [...new Set(students.map(s => s.class).filter(Boolean))].sort((a, b) => a.localeCompare(b, "id", { numeric: true }));
+    $("student-class").innerHTML = `<option value="">Semua kelas</option>${classes.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}`;
+    scanPicker = createPicker($("student-picker"), { getClass: () => $("student-class").value });
 }
 
 async function switchCamera() {
-    if (cameras.length < 2) {
-        showMessage("scan-message", "Perangkat ini hanya menyediakan satu kamera atau kamera belum terdeteksi.");
-        return;
-    }
+    if (cameras.length < 2) return toast("Perangkat ini hanya memiliki satu kamera.");
+    const current = videoTrack()?.getSettings?.().deviceId;
+    const next = cameras[(Math.max(cameras.findIndex(c => c.id === current), 0) + 1) % cameras.length].id;
     await stopScanner();
-    cameraIndex = (cameraIndex + 1) % cameras.length;
-    await startScanner();
+    setStatus('<i class="app-dot"></i> Mengganti kamera...');
+    $("btn-torch") && ($("btn-torch").hidden = true);
+    await startScanner(next);
 }
 
 async function toggleTorch() {
-    if (!scanner || !cameraRunning) return;
+    const track = videoTrack(), btn = $("btn-torch");
+    if (!track || !btn) return;
     try {
+        await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
         torchOn = !torchOn;
-        await scanner.applyVideoConstraints({ advanced: [{ torch: torchOn }] });
-    } catch (error) {
-        torchOn = false;
-        showMessage("scan-message", "Senter tidak didukung oleh perangkat atau browser ini.");
+        btn.classList.toggle("active", torchOn);
+        btn.textContent = torchOn ? "Matikan Senter" : "Senter";
+    } catch {
+        btn.hidden = true;
+        toast("Senter tidak didukung di perangkat ini.", "error");
     }
 }
 
 async function saveRecord(form) {
-    if (!currentTicket) throw new Error("Tidak ada tiket yang sedang diproses. Silakan scan ulang.");
-    const formData = new FormData(form);
-    const studentId = String(formData.get("student_id") || "");
-    const reason = String(formData.get("reason") || "").trim();
-    if (!studentId || reason.length < 3) throw new Error("Pilih siswa dan isi alasan keterlambatan minimal 3 karakter.");
-    const button = document.getElementById("save-record-button");
-    button.disabled = true;
-    button.textContent = "Menyimpan...";
+    const reason = String(new FormData(form).get("reason") || "").trim();
+    const button = $("save-record-button");
     try {
-        const { data, error } = await supabase.rpc("record_late_arrival", { p_ticket_code: currentTicket.code, p_student_id: studentId, p_reason: reason });
+        if (!currentTicket) throw new UserError("Tiket tidak ditemukan. Silakan scan ulang.");
+        if (!scanPicker?.value) throw new UserError("Pilih nama siswa terlebih dahulu.");
+        if (reason.length < 3) throw new UserError("Isi alasan keterlambatan (minimal 3 karakter).");
+        setBusy(button, true, "Menyimpan...");
+        const { error } = await supabase.rpc("record_late_arrival", { p_ticket_code: currentTicket.code, p_student_id: scanPicker.value, p_reason: reason });
         if (error) throw error;
-        const selectedStudent = students.find(student => student.id === studentId);
-        await stopScanner();
-        document.getElementById("record-panel").hidden = true;
-        document.getElementById("scan-success").hidden = false;
-        document.getElementById("success-detail").textContent = `${selectedStudent?.full_name || "Siswa"} — ${selectedStudent?.class || ""} — ${currentTicket.code}. Tiket dapat digunakan kembali setelah pukul 00.00 WIB.`;
-        currentTicket = null;
-    } catch (error) {
-        showMessage("record-message", error.message || "Data gagal disimpan.", "error");
-    } finally {
-        button.disabled = false;
-        button.textContent = "Simpan Data";
-    }
-}
-
-async function loadOverview() {
-    const message = document.getElementById("overview-message");
-    if (!message) return;
-    try {
-        const [statsResult, recordsResult] = await Promise.all([
-            supabase.rpc("get_late_statistics"),
-            supabase.from("late_records").select("id,ticket_id,student_full_name,student_class,reason,recorder_name,created_at").order("created_at", { ascending: false }).limit(12)
-        ]);
-        if (statsResult.error) throw statsResult.error;
-        if (recordsResult.error) throw recordsResult.error;
-        const stats = statsResult.data || {};
-        document.getElementById("stat-today").textContent = Number(stats.today || 0).toLocaleString("id-ID");
-        document.getElementById("stat-month").textContent = Number(stats.month || 0).toLocaleString("id-ID");
-        document.getElementById("stat-total").textContent = Number(stats.total || 0).toLocaleString("id-ID");
-        renderWeeklyChart(stats.daily || []);
-        renderRecentRecords(recordsResult.data || []);
+        const s = students.find(x => x.id === scanPicker.value);
+        $("record-panel").hidden = true;
+        $("scan-success").hidden = false;
+        $("success-detail").textContent = `${s?.full_name || "Siswa"} — ${s?.class || ""} — ${currentTicket.code}. Tiket dapat digunakan kembali setelah pukul 00.00 WIB.`;
+        currentTicket = null; scanPicker = null;
     } catch (error) {
         console.error(error);
-        showMessage("overview-message", error.message || "Data dashboard gagal dimuat.", "error");
-        document.getElementById("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
-        document.getElementById("recent-records").innerHTML = '<tr><td colspan="6" class="app-empty">Data belum dapat dimuat.</td></tr>';
-    }
+        showMessage("record-message", errText(error, "Data gagal disimpan. Silakan coba lagi."), "error");
+    } finally { setBusy(button, false); }
 }
 
-function renderWeeklyChart(rows) {
-    const chart = document.getElementById("weekly-chart");
-    if (!chart) return;
-    const values = new Map(rows.map(row => [row.date, Number(row.count || 0)]));
-    const days = lastSevenDays().map(day => ({ ...day, count: values.get(day.key) || 0 }));
-    const max = Math.max(1, ...days.map(day => day.count));
-    chart.innerHTML = days.map(day => {
-        const height = day.count ? Math.max(5, Math.round(day.count / max * 100)) : 3;
-        return `<div class="app-chart-day"><span class="app-chart-count">${day.count}</span><div class="app-chart-track"><div class="app-chart-bar" style="height:${height}%"></div></div><span class="app-chart-label">${escapeHTML(day.label)}</span></div>`;
+function vChart(el, items, highlightLast = false) {
+    if (!el) return;
+    if (!items.some(i => i.count)) { el.style.display = "block"; el.innerHTML = '<p class="app-empty">Belum ada data.</p>'; return; }
+    const max = Math.max(...items.map(i => i.count));
+    el.style.display = "";
+    el.style.gridTemplateColumns = `repeat(${items.length},minmax(0,1fr))`;
+    el.innerHTML = items.map((it, i) => {
+        const h = it.count ? Math.max(5, Math.round(it.count / max * 100)) : 3;
+        return `<div class="app-chart-day"><span class="app-chart-count">${it.count}</span><div class="app-chart-track"><div class="app-chart-bar${highlightLast && i === items.length - 1 ? " today" : ""}" style="height:${h}%"></div></div><span class="app-chart-label">${esc(it.label)}</span></div>`;
     }).join("");
 }
 
-function renderRecentRecords(records) {
-    const tbody = document.getElementById("recent-records");
-    if (!tbody) return;
-    if (!records.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="app-empty">Belum ada data keterlambatan.</td></tr>';
+function hChart(el, items) {
+    if (!el) return;
+    if (!items.length) { el.innerHTML = '<p class="app-empty">Belum ada data.</p>'; return; }
+    const max = Math.max(...items.map(i => i.count), 1);
+    el.innerHTML = items.map(it => `<div class="hbar-row"><span class="hbar-label" title="${esc(it.label)}">${esc(it.label)}</span><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(3, Math.round(it.count / max * 100))}%"></div></div><span class="hbar-count">${it.count}</span></div>`).join("");
+}
+
+async function loadStats() {
+    const { data, error } = await supabase.rpc("get_dashboard_stats");
+    if (!$("stat-today")) return;
+    if (error || !data) {
+        showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
+        ["weekly-chart", "hour-chart"].forEach(id => { $(id).innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>'; });
+        $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         return;
     }
-    tbody.innerHTML = records.map(record => {
-        return `<tr><td>${escapeHTML(formatDateTime(record.created_at))}</td><td>${escapeHTML(record.ticket_id || "—")}</td><td>${escapeHTML(record.student_full_name || "—")}</td><td>${escapeHTML(record.student_class || "—")}</td><td><span class="app-record-note">${escapeHTML(record.reason || "—")}</span></td><td>${escapeHTML(record.recorder_name || "—")}</td></tr>`;
-    }).join("");
+    $("stat-today").textContent = num(data.today);
+    $("stat-week").textContent = num(data.week);
+    $("stat-month").textContent = num(data.month);
+    $("stat-total").textContent = num(data.total);
+    vChart($("weekly-chart"), (data.daily || []).map(r => ({
+        label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }), count: Number(r.count)
+    })), true);
+    hChart($("class-chart"), (data.by_class || []).map(r => ({ label: r.label, count: Number(r.count) })));
+    const hours = new Map((data.by_hour || []).map(r => [Number(r.hour), Number(r.count)]));
+    if (hours.size) {
+        const keys = [...hours.keys()], items = [];
+        for (let h = Math.min(...keys); h <= Math.max(...keys); h++) items.push({ label: String(h).padStart(2, "0"), count: hours.get(h) || 0 });
+        vChart($("hour-chart"), items);
+    } else vChart($("hour-chart"), []);
+}
+
+async function loadLeaderboard() {
+    const el = $("leaderboard");
+    if (!el) return;
+    const { data, error } = await supabase.rpc("get_late_leaderboard", { p_period: $("lb-period")?.value || "month" });
+    if (!$("leaderboard")) return;
+    if (error) { el.innerHTML = `<p class="app-empty">${esc(errText(error, "Peringkat belum dapat dimuat."))}</p>`; return; }
+    if (!data?.length) { el.innerHTML = '<p class="app-empty">Belum ada data.</p>'; return; }
+    const max = Math.max(...data.map(r => Number(r.count)), 1);
+    el.innerHTML = `<ol class="lb">${data.map((r, i) => `
+        <li><span class="lb-rank r${i + 1}">${i + 1}</span>
+        <div class="lb-body"><div class="lb-top"><b>${esc(r.name)}</b><span class="app-muted">${esc(r.class || "")}</span></div>
+        <div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, Math.round(Number(r.count) / max * 100))}%"></div></div></div>
+        <span class="lb-count">${r.count}×</span></li>`).join("")}</ol>`;
+}
+
+async function loadRecords() {
+    const req = ++rec.req;
+    if (!$("recent-records")) return;
+    const cols = isAdmin() ? 7 : 6;
+    const { data, error } = await supabase.rpc("list_late_records", { p_search: rec.search, p_range: rec.range, p_limit: PAGE_SIZE, p_offset: rec.page * PAGE_SIZE });
+    const tbody = $("recent-records");
+    if (req !== rec.req || !tbody) return;
+    if (error || !data) {
+        tbody.innerHTML = `<tr><td colspan="${cols}" class="app-empty">${esc(errText(error, "Data belum dapat dimuat."))}</td></tr>`;
+        return;
+    }
+    rec.rows = data.rows || [];
+    rec.total = Number(data.total || 0);
+    tbody.innerHTML = rec.rows.length ? rec.rows.map(r => `<tr>
+        <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.student_full_name || "—")}</td>
+        <td>${esc(r.student_class || "—")}</td><td><span class="app-record-note">${esc(r.reason || "—")}</span></td>
+        ${isAdmin() ? `<td>${esc(r.recorder_name || "—")}</td>` : ""}
+        <td>${r.can_edit ? `<button type="button" class="app-button app-button-outline app-button-small edit-btn" data-id="${esc(r.id)}">Ubah</button>` : ""}</td></tr>`).join("")
+        : `<tr><td colspan="${cols}" class="app-empty">${rec.search || rec.range !== "all" ? "Tidak ada data yang cocok." : "Belum ada data keterlambatan."}</td></tr>`;
+    const pages = Math.max(1, Math.ceil(rec.total / PAGE_SIZE));
+    const from = rec.total ? rec.page * PAGE_SIZE + 1 : 0, to = Math.min(rec.total, (rec.page + 1) * PAGE_SIZE);
+    $("pager-info").textContent = `Menampilkan ${num(from)}–${num(to)} dari ${num(rec.total)}`;
+    $("pager-page").textContent = `${rec.page + 1} / ${pages}`;
+    $("pg-prev").disabled = rec.page === 0;
+    $("pg-next").disabled = rec.page + 1 >= pages;
+}
+
+function loadOverview() {
+    return Promise.all([loadStats(), loadRecords(), isAdmin() ? loadLeaderboard() : null]);
+}
+
+async function openEdit(row) {
+    try { await loadStudents(); } catch { return toast("Data siswa belum dapat dimuat.", "error"); }
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.innerHTML = `
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="edit-title">
+        <h2 id="edit-title" class="app-panel-title">Ubah Data Keterlambatan</h2><div class="app-double-line"></div>
+        <p class="app-muted" style="margin:-8px 0 16px">Tiket ${esc(row.ticket_id || "—")} · ${esc(formatDateTime(row.created_at))}</p>
+        <form id="edit-form">
+            <div class="app-form-group"><label>Nama Siswa</label><div id="edit-picker"></div></div>
+            <div class="app-form-group"><label for="edit-reason">Alasan Terlambat <span class="app-required">*</span></label>
+                <textarea id="edit-reason" rows="4" minlength="3" maxlength="1000" required>${esc(row.reason)}</textarea></div>
+            <div id="edit-message" class="app-message" hidden></div>
+            <div class="app-button-row">
+                <button type="button" class="app-button app-button-outline" data-close>Batal</button>
+                <button type="submit" class="app-button app-button-primary" id="edit-save">Simpan Perubahan</button>
+            </div>
+        </form>
+    </div>`;
+    document.body.append(modal);
+    document.body.style.overflow = "hidden";
+    const picker = createPicker($("edit-picker"), { placeholder: `${row.student_full_name} (${row.student_class})` });
+    if (row.student_id) picker.set(row.student_id);
+    editing = { row, picker, modal };
+}
+
+function closeEdit() {
+    if (!editing) return;
+    openPicker?.close();
+    editing.modal.remove();
+    document.body.style.overflow = "";
+    editing = null;
 }
 
 async function handleSubmit(event) {
     const form = event.target;
-    if (form.id !== "login-form" && form.id !== "record-form") return;
+    if (!["login-form", "forgot-form", "reset-form", "record-form", "edit-form"].includes(form.id)) return;
     event.preventDefault();
+    const fd = new FormData(form);
+    const button = form.querySelector('button[type="submit"]');
+
+    if (form.id === "record-form") return saveRecord(form);
+
     if (form.id === "login-form") {
-        const button = form.querySelector('button[type="submit"]');
-        button.disabled = true;
-        button.textContent = "Memeriksa...";
-        try {
-            const formData = new FormData(form);
-            const { data, error } = await supabase.auth.signInWithPassword({ email: String(formData.get("email") || "").trim(), password: String(formData.get("password") || "") });
-            if (error) throw error;
-            session = data.session;
-            await navigate();
-        } catch (error) {
-            const oldMessage = document.getElementById("login-message");
-            if (oldMessage) oldMessage.remove();
-            const box = document.createElement("div");
-            box.id = "login-message";
-            box.className = "app-message error";
-            box.setAttribute("role", "alert");
-            box.textContent = error.message || "Email atau password tidak benar.";
-            form.prepend(box);
-            button.disabled = false;
-            button.textContent = "Masuk";
+        setBusy(button, true, "Memeriksa...");
+        const { error } = await supabase.auth.signInWithPassword({ email: String(fd.get("email")).trim(), password: String(fd.get("password")) });
+        if (error) {
+            showMessage("login-message", error.status === 400 ? "Email atau password salah." : errText(error, "Gagal masuk. Silakan coba lagi."), "error");
+            setBusy(button, false);
         }
         return;
     }
-    const button = document.getElementById("save-record-button");
-    if (button.disabled) return;
-    await saveRecord(form);
+
+    if (form.id === "forgot-form") {
+        setBusy(button, true, "Mengirim...");
+        const { error } = await supabase.auth.resetPasswordForEmail(String(fd.get("email")).trim(), { redirectTo: `${location.origin}${location.pathname}` });
+        if (error) {
+            showMessage("forgot-message", error.status === 429 ? "Terlalu banyak permintaan. Coba lagi beberapa menit lagi." : errText(error, "Tautan gagal dikirim. Silakan coba lagi."), "error");
+            setBusy(button, false);
+        } else {
+            showMessage("forgot-message", "Jika email terdaftar, tautan untuk membuat password baru sudah dikirim. Periksa kotak masuk atau folder spam.", "success");
+            button.textContent = "Terkirim";
+        }
+        return;
+    }
+
+    if (form.id === "reset-form") {
+        const pw = String(fd.get("password")), confirm = String(fd.get("confirm"));
+        if (pw.length < 8) return showMessage("reset-message", "Password minimal 8 karakter.", "error");
+        if (pw !== confirm) return showMessage("reset-message", "Kedua password tidak sama.", "error");
+        setBusy(button, true, "Menyimpan...");
+        const { error } = await supabase.auth.updateUser({ password: pw });
+        if (error) {
+            showMessage("reset-message", /different|same/i.test(error.message) ? "Password baru harus berbeda dari password lama." : errText(error, "Password gagal diubah. Minta tautan baru lalu coba lagi."), "error");
+            setBusy(button, false);
+            return;
+        }
+        recovering = false;
+        flash = { text: "Password berhasil diubah. Silakan masuk dengan password baru.", type: "success" };
+        await supabase.auth.signOut();
+        return;
+    }
+
+    if (form.id === "edit-form" && editing) {
+        const reason = $("edit-reason").value.trim();
+        if (reason.length < 3) return showMessage("edit-message", "Alasan minimal 3 karakter.", "error");
+        setBusy(button, true, "Menyimpan...");
+        const { error } = await supabase.rpc("update_late_record", { p_id: String(editing.row.id), p_student_id: editing.picker.value, p_reason: reason });
+        if (error) {
+            showMessage("edit-message", errText(error, "Perubahan gagal disimpan. Silakan coba lagi."), "error");
+            setBusy(button, false);
+            return;
+        }
+        closeEdit();
+        toast("Perubahan disimpan.");
+        loadRecords();
+        if (isAdmin()) loadLeaderboard();
+    }
 }
 
 async function handleClick(event) {
-    const target = event.target.closest("button, a");
-    if (!target) return;
-    if (target.id === "logout-button") {
-        target.disabled = true;
-        const { error } = await supabase.auth.signOut();
-        if (error) {
-            target.disabled = false;
-            window.alert(error.message);
-        }
-        return;
-    }
-    if (target.id === "forgot-password") {
-        event.preventDefault();
-        const email = document.getElementById("login-email")?.value.trim();
-        if (!email) {
-            const input = document.getElementById("login-email");
-            input?.focus();
-            input?.setCustomValidity("Masukkan email terlebih dahulu.");
-            input?.reportValidity();
-            input?.addEventListener("input", () => input.setCustomValidity(""), { once: true });
-            return;
-        }
-        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}${location.pathname}#login` });
-        if (error) window.alert(error.message);
-        else window.alert("Tautan pemulihan password telah dikirim jika email terdaftar.");
-        return;
-    }
-    if (target.id === "btn-switch") await switchCamera();
-    if (target.id === "btn-torch") await toggleTorch();
-    if (target.id === "rescan-button" || target.id === "next-scan-button") {
-        currentTicket = null;
-        location.hash = "#scan";
-        if (location.hash === "#scan") await navigate();
-    }
-    if (target.id === "refresh-overview") {
-        target.disabled = true;
-        await loadOverview();
-        target.disabled = false;
-    }
-    if (target.matches(".menu a")) document.getElementById("menu-toggle").checked = false;
+    const t = event.target;
+    if (openPicker && !openPicker.root.contains(t)) openPicker.close();
+    if (t.classList?.contains("modal")) return closeEdit();
+    const el = t.closest("button, a");
+    if (!el) return;
+
+    if (el.id === "logout-button") { el.disabled = true; const { error } = await supabase.auth.signOut(); if (error) { el.disabled = false; toast("Gagal keluar. Silakan coba lagi.", "error"); } return; }
+    if (el.matches("[data-close]")) return closeEdit();
+    if (el.classList.contains("edit-btn")) { const row = rec.rows.find(r => String(r.id) === el.dataset.id); if (row) openEdit(row); return; }
+    if (el.id === "btn-switch") return switchCamera();
+    if (el.id === "btn-torch") return toggleTorch();
+    if (el.id === "rescan-button" || el.id === "next-scan-button") { currentTicket = null; return navigate(); }
+    if (el.id === "refresh-overview") { el.disabled = true; await loadOverview(); el.disabled = false; return; }
+    if (el.id === "pg-prev" && rec.page > 0) { rec.page--; return loadRecords(); }
+    if (el.id === "pg-next") { rec.page++; return loadRecords(); }
+    if (el.matches(".menu a")) $("menu-toggle").checked = false;
 }
 
-page.addEventListener("submit", handleSubmit);
+const onSearch = debounce(v => { rec.search = v.trim(); rec.page = 0; loadRecords(); }, 300);
+
+page.addEventListener("input", e => { if (e.target.id === "rec-search") onSearch(e.target.value); });
+page.addEventListener("change", e => {
+    if (e.target.id === "student-class") scanPicker?.refresh();
+    if (e.target.id === "rec-range") { rec.range = e.target.value; rec.page = 0; loadRecords(); }
+    if (e.target.id === "lb-period") loadLeaderboard();
+});
+document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
-page.addEventListener("change", event => {
-    if (event.target.id === "student-class") filterStudents();
-});
-page.addEventListener("input", event => {
-    if (event.target.id === "student-search") filterStudents();
-});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && editing) closeEdit(); });
 window.addEventListener("hashchange", navigate);
 
 async function initialize() {
-    if (!isConfigured) {
-        await navigate();
-        return;
+    if (/error_code|error_description|error=access_denied/.test(location.search + location.hash)) {
+        flash = { text: "Tautan pemulihan tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru.", type: "error" };
+        history.replaceState(null, "", `${location.pathname}#forgot`);
     }
-    const { data, error } = await supabase.auth.getSession();
-    if (error) console.error(error);
-    session = data?.session || null;
-    supabase.auth.onAuthStateChange((event, nextSession) => {
-        session = nextSession;
-        if (!nextSession) profile = null;
-        Promise.resolve().then(() => navigate());
+    supabase.auth.onAuthStateChange((event, next) => {
+        const prevId = session?.user?.id;
+        session = next;
+        if (!next) { profile = null; recovering = false; }
+        if (event === "PASSWORD_RECOVERY") {
+            recovering = true;
+            if (location.hash !== "#reset") { location.hash = "#reset"; return; }
+        }
+        if (["INITIAL_SESSION", "TOKEN_REFRESHED", "USER_UPDATED"].includes(event)) return;
+        if (event === "SIGNED_IN" && next?.user?.id === prevId) return; // tab refocus re-fires SIGNED_IN; don't wipe the page
+        setTimeout(navigate, 0);
     });
+    const { data } = await supabase.auth.getSession();
+    session = data?.session || null;
     await navigate();
 }
 
