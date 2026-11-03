@@ -9,8 +9,10 @@
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
     <link rel="manifest" href="./site.webmanifest">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://tdyplxixwuwxcsacreiv.supabase.co" crossorigin>
     <link rel="stylesheet" href="./piket.css">
-    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <!-- html5-qrcode is now loaded on demand by piket.js (only on the scan page) -->
     <script type="module" src="./piket.js"></script>
 </head>
 <body>
@@ -36,6 +38,7 @@
         </div>
     </header>
     <div id="page" aria-live="polite"></div>
+    <div id="toast" class="toast" role="status" hidden></div>
     <footer class="footer">Copyright &copy; 2026 OSIS SMA Maitreyawira Palembang. All Rights Reserved</footer>
 </body>
 </html>
