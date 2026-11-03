@@ -6,6 +6,7 @@ const QR_LIB = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min
 const PAGE_SIZE = 25;
 const CAM_READY = '<i class="app-dot"></i> Kamera aktif. Menunggu QR code...';
 
+// PKCE: recovery links arrive as ?code=... so they don't collide with the #hash router.
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: "pkce" }
 });
@@ -21,6 +22,7 @@ const badCodes = new Map();
 const rec = { search: "", range: "all", page: 0, total: 0, rows: [], req: 0 };
 let qrLibReq = null, toastTimer = null;
 
+/* ---------- helpers ---------- */
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const isAdmin = () => profile?.role === "admin";
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -28,6 +30,7 @@ const num = v => Number(v || 0).toLocaleString("id-ID");
 
 class UserError extends Error {}
 
+// Only messages we wrote (or deliberate RAISE EXCEPTION from SQL) reach the user. Everything else is generic.
 function errText(error, fallback = "Terjadi kesalahan. Silakan coba lagi.") {
     if (error instanceof UserError) return error.message;
     if (error?.code === "P0001" && error.message) return error.message;
@@ -63,6 +66,7 @@ function setBusy(button, busy, label) {
     button.disabled = busy;
 }
 
+/* ---------- renderers ---------- */
 function msgBox(id, m) {
     return `<div id="${id}" class="app-message ${m?.type || ""}" role="alert" ${m ? "" : "hidden"}>${esc(m?.text)}</div>`;
 }
@@ -192,6 +196,8 @@ function renderOverview() {
                 <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat...</p></div></section>
             <section class="app-panel"><h2 class="app-panel-title">Kelas Terbanyak (30 Hari)</h2><div class="app-double-line"></div>
                 <div id="class-chart"><p class="app-empty">Memuat...</p></div></section>
+            <section class="app-panel ${admin ? "" : "app-span-all"}"><h2 class="app-panel-title">Jam Keterlambatan (30 Hari)</h2><div class="app-double-line"></div>
+                <div class="app-chart" id="hour-chart"><p class="app-empty">Memuat...</p></div></section>
             ${admin ? `
             <section class="app-panel">
                 <div class="app-section-heading"><h2>Paling Sering Terlambat</h2>
@@ -235,12 +241,13 @@ function setHeader() {
     $("menu-toggle").checked = false;
 }
 
+/* ---------- routing ---------- */
 const PUBLIC_ROUTES = ["login", "forgot"];
 const ROUTES = ["login", "forgot", "reset", "scan", "overview"];
 const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null, "", `#${r}`); };
 
 async function getProfile() {
-    if (profile && profile.id === session.user.id) return profile;
+    if (profile && profile.id === session.user.id) return profile; // cached: no DB hit on every page change
     const { data, error } = await supabase.from("accounts").select("id,full_name,role,active").eq("id", session.user.id).single();
     if (error || !data) throw new UserError("Akun tidak memiliki akses ke sistem.");
     if (!data.active) throw new UserError("Akun ini dinonaktifkan. Hubungi administrator.");
@@ -261,7 +268,7 @@ async function navigate() {
         } catch (error) {
             profile = null;
             flash = { text: errText(error, "Akun tidak memiliki akses ke sistem."), type: "error" };
-            await supabase.auth.signOut();
+            await supabase.auth.signOut(); // SIGNED_OUT event re-renders the login page with the flash message
             return;
         }
         if (run !== navId) return;
@@ -287,15 +294,16 @@ async function navigate() {
         scanPicker = null;
         page.innerHTML = renderScan();
         startScanner();
-        loadStudents().catch(() => {});
+        loadStudents().catch(() => {}); // prefetch so step 2 opens instantly
     }
 }
 
+/* ---------- students + custom picker ---------- */
 function loadStudents() {
     if (students.length) return Promise.resolve(students);
     return studentsReq ||= (async () => {
         try {
-            const { data, error } = await supabase.from("students").select("id,full_name,class").eq("active", true).order("full_name", { ascending: true });
+            const { data, error } = await supabase.from("students").select("id,full_name,class,is_osis").eq("active", true).order("full_name", { ascending: true });
             if (error) throw error;
             students = (data || []).map(s => ({ ...s, _q: `${s.full_name} ${s.class}`.toLocaleLowerCase("id") }));
             return students;
@@ -328,7 +336,7 @@ function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" }
         active = Math.min(active, Math.max(shown.length - 1, 0));
         list.innerHTML = shown.length
             ? shown.map((s, i) => `<li role="option" data-id="${esc(s.id)}" aria-selected="${s.id === value}" class="${i === active ? "active" : ""}${s.id === value ? " selected" : ""}">
-                <span class="picker-avatar">${esc(initials(s.full_name))}</span><span class="picker-name">${esc(s.full_name)}</span><span class="picker-class">${esc(s.class)}</span></li>`).join("")
+                <span class="picker-avatar${s.is_osis ? " osis" : ""}">${esc(initials(s.full_name))}</span><span class="picker-name">${esc(s.full_name)}</span>${s.is_osis ? '<span class="osis-pill">OSIS</span>' : ""}<span class="picker-class">${esc(s.class)}</span></li>`).join("")
               + (items.length > 80 ? `<li class="picker-more">Menampilkan 80 dari ${items.length}. Ketik untuk mempersempit.</li>` : "")
             : `<li class="picker-empty">Siswa tidak ditemukan</li>`;
     }
@@ -371,6 +379,7 @@ function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" }
     return api;
 }
 
+/* ---------- scanner ---------- */
 function loadQrLib() {
     if (window.Html5Qrcode) return Promise.resolve();
     return qrLibReq ||= new Promise((resolve, reject) => {
@@ -389,7 +398,7 @@ async function startScanner(deviceId) {
     if (!$("reader")) return;
     try {
         await loadQrLib();
-        if (!$("reader")) return;
+        if (!$("reader")) return; // user left the page while the library loaded
         scanner = new Html5Qrcode("reader", { verbose: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], useBarCodeDetectorIfSupported: true });
         const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" };
         await scanner.start(source, { fps: 10, aspectRatio: 1 }, onDecode, () => {});
@@ -407,7 +416,7 @@ async function startScanner(deviceId) {
 async function setupControls() {
     const btn = $("btn-torch");
     if (!btn) return;
-    btn.hidden = !videoTrack()?.getCapabilities?.().torch;
+    btn.hidden = !videoTrack()?.getCapabilities?.().torch; // hidden on devices without flash (e.g. iPhone Safari, front cameras)
     try { cameras = await Html5Qrcode.getCameras(); } catch { cameras = []; }
 }
 let cameras = [];
@@ -422,7 +431,7 @@ async function stopScanner() {
 }
 
 function scanError(key, text) {
-    badCodes.set(key, Date.now() + 8000);
+    badCodes.set(key, Date.now() + 8000); // ignore this same QR for 8s so the message doesn't flicker
     showMessage("scan-message", text, "error");
     clearTimeout(scanMsgTimer);
     scanMsgTimer = setTimeout(() => showMessage("scan-message", ""), 5000);
@@ -508,6 +517,7 @@ async function saveRecord(form) {
     } finally { setBusy(button, false); }
 }
 
+/* ---------- dashboard ---------- */
 function vChart(el, items, highlightLast = false) {
     if (!el) return;
     if (!items.some(i => i.count)) { el.style.display = "block"; el.innerHTML = '<p class="app-empty">Belum ada data.</p>'; return; }
@@ -532,7 +542,7 @@ async function loadStats() {
     if (!$("stat-today")) return;
     if (error || !data) {
         showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
-        $("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
+        ["weekly-chart", "hour-chart"].forEach(id => { $(id).innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>'; });
         $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         return;
     }
@@ -544,6 +554,12 @@ async function loadStats() {
         label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }), count: Number(r.count)
     })), true);
     hChart($("class-chart"), (data.by_class || []).map(r => ({ label: r.label, count: Number(r.count) })));
+    const hours = new Map((data.by_hour || []).map(r => [Number(r.hour), Number(r.count)]));
+    if (hours.size) {
+        const keys = [...hours.keys()], items = [];
+        for (let h = Math.min(...keys); h <= Math.max(...keys); h++) items.push({ label: String(h).padStart(2, "0"), count: hours.get(h) || 0 });
+        vChart($("hour-chart"), items);
+    } else vChart($("hour-chart"), []);
 }
 
 async function loadLeaderboard() {
@@ -556,7 +572,7 @@ async function loadLeaderboard() {
     const max = Math.max(...data.map(r => Number(r.count)), 1);
     el.innerHTML = `<ol class="lb">${data.map((r, i) => `
         <li><span class="lb-rank r${i + 1}">${i + 1}</span>
-        <div class="lb-body"><div class="lb-top"><b>${esc(r.name)}</b><span class="app-muted">${esc(r.class || "")}</span></div>
+        <div class="lb-body"><div class="lb-top"><b>${esc(r.name)}${r.is_osis ? ' <span class="osis-pill">OSIS</span>' : ""}</b><span class="app-muted">${esc(r.class || "")}</span></div>
         <div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, Math.round(Number(r.count) / max * 100))}%"></div></div></div>
         <span class="lb-count">${r.count}×</span></li>`).join("")}</ol>`;
 }
@@ -567,7 +583,7 @@ async function loadRecords() {
     const cols = isAdmin() ? 7 : 6;
     const { data, error } = await supabase.rpc("list_late_records", { p_search: rec.search, p_range: rec.range, p_limit: PAGE_SIZE, p_offset: rec.page * PAGE_SIZE });
     const tbody = $("recent-records");
-    if (req !== rec.req || !tbody) return;
+    if (req !== rec.req || !tbody) return; // stale response
     if (error || !data) {
         tbody.innerHTML = `<tr><td colspan="${cols}" class="app-empty">${esc(errText(error, "Data belum dapat dimuat."))}</td></tr>`;
         return;
@@ -575,7 +591,7 @@ async function loadRecords() {
     rec.rows = data.rows || [];
     rec.total = Number(data.total || 0);
     tbody.innerHTML = rec.rows.length ? rec.rows.map(r => `<tr>
-        <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.student_full_name || "—")}</td>
+        <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.student_full_name || "—")}${r.is_osis ? ' <span class="osis-pill">OSIS</span>' : ""}</td>
         <td>${esc(r.student_class || "—")}</td><td><span class="app-record-note">${esc(r.reason || "—")}</span></td>
         ${isAdmin() ? `<td>${esc(r.recorder_name || "—")}</td>` : ""}
         <td>${r.can_edit ? `<button type="button" class="app-button app-button-outline app-button-small edit-btn" data-id="${esc(r.id)}">Ubah</button>` : ""}</td></tr>`).join("")
@@ -592,6 +608,7 @@ function loadOverview() {
     return Promise.all([loadStats(), loadRecords(), isAdmin() ? loadLeaderboard() : null]);
 }
 
+/* ---------- edit modal ---------- */
 async function openEdit(row) {
     try { await loadStudents(); } catch { return toast("Data siswa belum dapat dimuat.", "error"); }
     const modal = document.createElement("div");
@@ -626,6 +643,7 @@ function closeEdit() {
     editing = null;
 }
 
+/* ---------- form handlers ---------- */
 async function handleSubmit(event) {
     const form = event.target;
     if (!["login-form", "forgot-form", "reset-form", "record-form", "edit-form"].includes(form.id)) return;
@@ -641,7 +659,7 @@ async function handleSubmit(event) {
         if (error) {
             showMessage("login-message", error.status === 400 ? "Email atau password salah." : errText(error, "Gagal masuk. Silakan coba lagi."), "error");
             setBusy(button, false);
-        }
+        } // on success the SIGNED_IN event navigates
         return;
     }
 
@@ -724,11 +742,14 @@ document.addEventListener("click", handleClick);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && editing) closeEdit(); });
 window.addEventListener("hashchange", navigate);
 
+/* ---------- init ---------- */
 async function initialize() {
+    // Expired / invalid recovery link comes back with an error in the URL
     if (/error_code|error_description|error=access_denied/.test(location.search + location.hash)) {
         flash = { text: "Tautan pemulihan tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru.", type: "error" };
         history.replaceState(null, "", `${location.pathname}#forgot`);
     }
+    // Register BEFORE getSession so the PASSWORD_RECOVERY event is never missed
     supabase.auth.onAuthStateChange((event, next) => {
         const prevId = session?.user?.id;
         session = next;
