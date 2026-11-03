@@ -6,7 +6,6 @@ const QR_LIB = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min
 const PAGE_SIZE = 25;
 const CAM_READY = '<i class="app-dot"></i> Kamera aktif. Menunggu QR code...';
 
-// PKCE: recovery links arrive as ?code=... so they don't collide with the #hash router.
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: "pkce" }
 });
@@ -22,7 +21,6 @@ const badCodes = new Map();
 const rec = { search: "", range: "all", page: 0, total: 0, rows: [], req: 0 };
 let qrLibReq = null, toastTimer = null;
 
-/* ---------- helpers ---------- */
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const isAdmin = () => profile?.role === "admin";
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -30,7 +28,6 @@ const num = v => Number(v || 0).toLocaleString("id-ID");
 
 class UserError extends Error {}
 
-// Only messages we wrote (or deliberate RAISE EXCEPTION from SQL) reach the user. Everything else is generic.
 function errText(error, fallback = "Terjadi kesalahan. Silakan coba lagi.") {
     if (error instanceof UserError) return error.message;
     if (error?.code === "P0001" && error.message) return error.message;
@@ -66,7 +63,6 @@ function setBusy(button, busy, label) {
     button.disabled = busy;
 }
 
-/* ---------- renderers ---------- */
 function msgBox(id, m) {
     return `<div id="${id}" class="app-message ${m?.type || ""}" role="alert" ${m ? "" : "hidden"}>${esc(m?.text)}</div>`;
 }
@@ -196,8 +192,6 @@ function renderOverview() {
                 <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat...</p></div></section>
             <section class="app-panel"><h2 class="app-panel-title">Kelas Terbanyak (30 Hari)</h2><div class="app-double-line"></div>
                 <div id="class-chart"><p class="app-empty">Memuat...</p></div></section>
-            <section class="app-panel ${admin ? "" : "app-span-all"}"><h2 class="app-panel-title">Jam Keterlambatan (30 Hari)</h2><div class="app-double-line"></div>
-                <div class="app-chart" id="hour-chart"><p class="app-empty">Memuat...</p></div></section>
             ${admin ? `
             <section class="app-panel">
                 <div class="app-section-heading"><h2>Paling Sering Terlambat</h2>
@@ -241,7 +235,6 @@ function setHeader() {
     $("menu-toggle").checked = false;
 }
 
-/* ---------- routing ---------- */
 const PUBLIC_ROUTES = ["login", "forgot"];
 const ROUTES = ["login", "forgot", "reset", "scan", "overview"];
 const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null, "", `#${r}`); };
@@ -268,7 +261,7 @@ async function navigate() {
         } catch (error) {
             profile = null;
             flash = { text: errText(error, "Akun tidak memiliki akses ke sistem."), type: "error" };
-            await supabase.auth.signOut(); // SIGNED_OUT event re-renders the login page with the flash message
+            await supabase.auth.signOut();
             return;
         }
         if (run !== navId) return;
@@ -294,11 +287,10 @@ async function navigate() {
         scanPicker = null;
         page.innerHTML = renderScan();
         startScanner();
-        loadStudents().catch(() => {}); // prefetch so step 2 opens instantly
+        loadStudents().catch(() => {});
     }
 }
 
-/* ---------- students + custom picker ---------- */
 function loadStudents() {
     if (students.length) return Promise.resolve(students);
     return studentsReq ||= (async () => {
@@ -379,7 +371,6 @@ function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" }
     return api;
 }
 
-/* ---------- scanner ---------- */
 function loadQrLib() {
     if (window.Html5Qrcode) return Promise.resolve();
     return qrLibReq ||= new Promise((resolve, reject) => {
@@ -398,7 +389,7 @@ async function startScanner(deviceId) {
     if (!$("reader")) return;
     try {
         await loadQrLib();
-        if (!$("reader")) return; // user left the page while the library loaded
+        if (!$("reader")) return;
         scanner = new Html5Qrcode("reader", { verbose: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], useBarCodeDetectorIfSupported: true });
         const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" };
         await scanner.start(source, { fps: 10, aspectRatio: 1 }, onDecode, () => {});
@@ -416,7 +407,7 @@ async function startScanner(deviceId) {
 async function setupControls() {
     const btn = $("btn-torch");
     if (!btn) return;
-    btn.hidden = !videoTrack()?.getCapabilities?.().torch; // hidden on devices without flash (e.g. iPhone Safari, front cameras)
+    btn.hidden = !videoTrack()?.getCapabilities?.().torch;
     try { cameras = await Html5Qrcode.getCameras(); } catch { cameras = []; }
 }
 let cameras = [];
@@ -431,7 +422,7 @@ async function stopScanner() {
 }
 
 function scanError(key, text) {
-    badCodes.set(key, Date.now() + 8000); // ignore this same QR for 8s so the message doesn't flicker
+    badCodes.set(key, Date.now() + 8000);
     showMessage("scan-message", text, "error");
     clearTimeout(scanMsgTimer);
     scanMsgTimer = setTimeout(() => showMessage("scan-message", ""), 5000);
@@ -517,7 +508,6 @@ async function saveRecord(form) {
     } finally { setBusy(button, false); }
 }
 
-/* ---------- dashboard ---------- */
 function vChart(el, items, highlightLast = false) {
     if (!el) return;
     if (!items.some(i => i.count)) { el.style.display = "block"; el.innerHTML = '<p class="app-empty">Belum ada data.</p>'; return; }
@@ -542,7 +532,7 @@ async function loadStats() {
     if (!$("stat-today")) return;
     if (error || !data) {
         showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
-        ["weekly-chart", "hour-chart"].forEach(id => { $(id).innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>'; });
+        $("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         return;
     }
@@ -554,12 +544,6 @@ async function loadStats() {
         label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }), count: Number(r.count)
     })), true);
     hChart($("class-chart"), (data.by_class || []).map(r => ({ label: r.label, count: Number(r.count) })));
-    const hours = new Map((data.by_hour || []).map(r => [Number(r.hour), Number(r.count)]));
-    if (hours.size) {
-        const keys = [...hours.keys()], items = [];
-        for (let h = Math.min(...keys); h <= Math.max(...keys); h++) items.push({ label: String(h).padStart(2, "0"), count: hours.get(h) || 0 });
-        vChart($("hour-chart"), items);
-    } else vChart($("hour-chart"), []);
 }
 
 async function loadLeaderboard() {
@@ -608,7 +592,6 @@ function loadOverview() {
     return Promise.all([loadStats(), loadRecords(), isAdmin() ? loadLeaderboard() : null]);
 }
 
-/* ---------- edit modal ---------- */
 async function openEdit(row) {
     try { await loadStudents(); } catch { return toast("Data siswa belum dapat dimuat.", "error"); }
     const modal = document.createElement("div");
@@ -643,7 +626,6 @@ function closeEdit() {
     editing = null;
 }
 
-/* ---------- form handlers ---------- */
 async function handleSubmit(event) {
     const form = event.target;
     if (!["login-form", "forgot-form", "reset-form", "record-form", "edit-form"].includes(form.id)) return;
@@ -659,7 +641,7 @@ async function handleSubmit(event) {
         if (error) {
             showMessage("login-message", error.status === 400 ? "Email atau password salah." : errText(error, "Gagal masuk. Silakan coba lagi."), "error");
             setBusy(button, false);
-        } // on success the SIGNED_IN event navigates
+        }
         return;
     }
 
@@ -742,14 +724,11 @@ document.addEventListener("click", handleClick);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && editing) closeEdit(); });
 window.addEventListener("hashchange", navigate);
 
-/* ---------- init ---------- */
 async function initialize() {
-    // Expired / invalid recovery link comes back with an error in the URL
     if (/error_code|error_description|error=access_denied/.test(location.search + location.hash)) {
         flash = { text: "Tautan pemulihan tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru.", type: "error" };
         history.replaceState(null, "", `${location.pathname}#forgot`);
     }
-    // Register BEFORE getSession so the PASSWORD_RECOVERY event is never missed
     supabase.auth.onAuthStateChange((event, next) => {
         const prevId = session?.user?.id;
         session = next;
@@ -759,7 +738,7 @@ async function initialize() {
             if (location.hash !== "#reset") { location.hash = "#reset"; return; }
         }
         if (["INITIAL_SESSION", "TOKEN_REFRESHED", "USER_UPDATED"].includes(event)) return;
-        if (event === "SIGNED_IN" && next?.user?.id === prevId) return; // tab refocus re-fires SIGNED_IN; don't wipe the page
+        if (event === "SIGNED_IN" && next?.user?.id === prevId) return;
         setTimeout(navigate, 0);
     });
     const { data } = await supabase.auth.getSession();
