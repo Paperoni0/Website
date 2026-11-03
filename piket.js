@@ -192,8 +192,6 @@ function renderOverview() {
                 <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat...</p></div></section>
             <section class="app-panel"><h2 class="app-panel-title">Kelas Terbanyak (30 Hari)</h2><div class="app-double-line"></div>
                 <div id="class-chart"><p class="app-empty">Memuat...</p></div></section>
-            <section class="app-panel ${admin ? "" : "app-span-all"}"><h2 class="app-panel-title">Jam Keterlambatan (30 Hari)</h2><div class="app-double-line"></div>
-                <div class="app-chart" id="hour-chart"><p class="app-empty">Memuat...</p></div></section>
             ${admin ? `
             <section class="app-panel">
                 <div class="app-section-heading"><h2>Paling Sering Terlambat</h2>
@@ -534,7 +532,7 @@ async function loadStats() {
     if (!$("stat-today")) return;
     if (error || !data) {
         showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
-        ["weekly-chart", "hour-chart"].forEach(id => { $(id).innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>'; });
+        $("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
         return;
     }
@@ -546,12 +544,6 @@ async function loadStats() {
         label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }), count: Number(r.count)
     })), true);
     hChart($("class-chart"), (data.by_class || []).map(r => ({ label: r.label, count: Number(r.count) })));
-    const hours = new Map((data.by_hour || []).map(r => [Number(r.hour), Number(r.count)]));
-    if (hours.size) {
-        const keys = [...hours.keys()], items = [];
-        for (let h = Math.min(...keys); h <= Math.max(...keys); h++) items.push({ label: String(h).padStart(2, "0"), count: hours.get(h) || 0 });
-        vChart($("hour-chart"), items);
-    } else vChart($("hour-chart"), []);
 }
 
 async function loadLeaderboard() {
