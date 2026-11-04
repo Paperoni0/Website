@@ -231,7 +231,7 @@ function setHeader() {
     document.querySelectorAll(".auth-link").forEach(el => { el.hidden = !session; });
     document.querySelectorAll(".guest-link").forEach(el => { el.hidden = !!session; });
     $("header-account").hidden = !session;
-    $("account-name").textContent = profile?.full_name || session?.user?.email || "Petugas";
+    $("account-name").textContent = profile?.name || session?.user?.email || "Petugas";
     $("menu-toggle").checked = false;
 }
 
@@ -241,7 +241,7 @@ const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null,
 
 async function getProfile() {
     if (profile && profile.id === session.user.id) return profile; // cached: no DB hit on every page change
-    const { data, error } = await supabase.from("accounts").select("id,full_name,role,active").eq("id", session.user.id).single();
+    const { data, error } = await supabase.from("accounts").select("id,name,role,active").eq("id", session.user.id).single();
     if (error || !data) throw new UserError("Akun tidak memiliki akses ke sistem.");
     if (!data.active) throw new UserError("Akun ini dinonaktifkan. Hubungi administrator.");
     return data;
@@ -295,9 +295,9 @@ function loadStudents() {
     if (students.length) return Promise.resolve(students);
     return studentsReq ||= (async () => {
         try {
-            const { data, error } = await supabase.from("students").select("id,full_name,class,is_osis").eq("active", true).order("full_name", { ascending: true });
+            const { data, error } = await supabase.from("students").select("id,name,class,is_osis").eq("active", true).order("name", { ascending: true });
             if (error) throw error;
-            students = (data || []).map(s => ({ ...s, _q: `${s.full_name} ${s.class}`.toLocaleLowerCase("id") }));
+            students = (data || []).map(s => ({ ...s, _q: `${s.name} ${s.class}`.toLocaleLowerCase("id") }));
             return students;
         } finally { studentsReq = null; }
     })();
@@ -328,7 +328,7 @@ function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" }
         active = Math.min(active, Math.max(shown.length - 1, 0));
         list.innerHTML = shown.length
             ? shown.map((s, i) => `<li role="option" data-id="${esc(s.id)}" aria-selected="${s.id === value}" class="${i === active ? "active" : ""}${s.id === value ? " selected" : ""}">
-                <span class="picker-avatar${s.is_osis ? " osis" : ""}">${esc(initials(s.full_name))}</span><span class="picker-name">${esc(s.full_name)}</span>${s.is_osis ? '<span class="osis-pill">OSIS</span>' : ""}<span class="picker-class">${esc(s.class)}</span></li>`).join("")
+                <span class="picker-avatar${s.is_osis ? " osis" : ""}">${esc(initials(s.name))}</span><span class="picker-name">${esc(s.name)}</span>${s.is_osis ? '<span class="osis-pill">OSIS</span>' : ""}<span class="picker-class">${esc(s.class)}</span></li>`).join("")
               + (items.length > 80 ? `<li class="picker-more">Menampilkan 80 dari ${items.length}. Ketik untuk mempersempit.</li>` : "")
             : `<li class="picker-empty">Siswa tidak ditemukan</li>`;
     }
@@ -342,7 +342,7 @@ function createPicker(root, { placeholder = "Pilih siswa", getClass = () => "" }
     function pick(s) {
         if (!s) return;
         value = s.id;
-        label.textContent = `${s.full_name} (${s.class})`;
+        label.textContent = `${s.name} (${s.class})`;
         label.classList.remove("placeholder");
         api.close();
     }
@@ -500,7 +500,7 @@ async function saveRecord(form) {
         const s = students.find(x => x.id === scanPicker.value);
         $("record-panel").hidden = true;
         $("scan-success").hidden = false;
-        $("success-detail").textContent = `${s?.full_name || "Siswa"} — ${s?.class || ""} — ${currentTicket.code}. Tiket dapat digunakan kembali setelah pukul 00.00 WIB.`;
+        $("success-detail").textContent = `${s?.name || "Siswa"} — ${s?.class || ""} — ${currentTicket.code}. Tiket dapat digunakan kembali setelah pukul 00.00 WIB.`;
         currentTicket = null; scanPicker = null;
     } catch (error) {
         console.error(error);
@@ -575,8 +575,8 @@ async function loadRecords() {
     rec.rows = data.rows || [];
     rec.total = Number(data.total || 0);
     tbody.innerHTML = rec.rows.length ? rec.rows.map(r => `<tr>
-        <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.student_full_name || "—")}${r.is_osis ? ' <span class="osis-pill">OSIS</span>' : ""}</td>
-        <td>${esc(r.student_class || "—")}</td><td><span class="app-record-note">${esc(r.reason || "—")}</span></td>
+        <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.name || "—")}${r.is_osis ? ' <span class="osis-pill">OSIS</span>' : ""}</td>
+        <td>${esc(r.class || "—")}</td><td><span class="app-record-note">${esc(r.reason || "—")}</span></td>
         ${isAdmin() ? `<td>${esc(r.recorder_name || "—")}</td>` : ""}
         <td>${r.can_edit ? `<button type="button" class="app-button app-button-outline app-button-small edit-btn" data-id="${esc(r.id)}">Ubah</button>` : ""}</td></tr>`).join("")
         : `<tr><td colspan="${cols}" class="app-empty">${rec.search || rec.range !== "all" ? "Tidak ada data yang cocok." : "Belum ada data keterlambatan."}</td></tr>`;
@@ -613,7 +613,7 @@ async function openEdit(row) {
     </div>`;
     document.body.append(modal);
     document.body.style.overflow = "hidden";
-    const picker = createPicker($("edit-picker"), { placeholder: `${row.student_full_name} (${row.student_class})` });
+    const picker = createPicker($("edit-picker"), { placeholder: `${row.name} (${row.class})` });
     if (row.student_id) picker.set(row.student_id);
     editing = { row, picker, modal };
 }
