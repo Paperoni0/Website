@@ -295,7 +295,7 @@ function loadStudents() {
     if (students.length) return Promise.resolve(students);
     return studentsReq ||= (async () => {
         try {
-            const { data, error } = await supabase.from("students").select("id,name,class,is_osis").eq("active", true).order("name", { ascending: true });
+            const { data, error } = await supabase.from("students").select("id,name,class,is_osis").order("name", { ascending: true });
             if (error) throw error;
             students = (data || []).map(s => ({ ...s, _q: `${s.name} ${s.class}`.toLocaleLowerCase("id") }));
             return students;
