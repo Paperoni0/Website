@@ -187,18 +187,18 @@ function renderOverview() {
             <article class="app-stat-card"><span class="app-stat-label">Bulan Ini</span><strong class="app-stat-value" id="stat-month">—</strong></article>
             <article class="app-stat-card"><span class="app-stat-label">Total Data</span><strong class="app-stat-value" id="stat-total">—</strong></article>
         </section>
+        ${admin ? `
         <div class="app-dashboard-grid">
             <section class="app-panel"><h2 class="app-panel-title">7 Hari Terakhir</h2><div class="app-double-line"></div>
                 <div class="app-chart" id="weekly-chart"><p class="app-empty">Memuat...</p></div></section>
             <section class="app-panel"><h2 class="app-panel-title">Kelas Terbanyak (30 Hari)</h2><div class="app-double-line"></div>
                 <div id="class-chart"><p class="app-empty">Memuat...</p></div></section>
-            ${admin ? `
             <section class="app-panel">
                 <div class="app-section-heading"><h2>Paling Sering Terlambat</h2>
                     <select id="lb-period" class="mini-select" aria-label="Periode"><option value="month">Bulan ini</option><option value="all">Semua waktu</option></select></div>
                 <div id="leaderboard"><p class="app-empty">Memuat...</p></div>
-            </section>` : ""}
-        </div>
+            </section>
+        </div>` : ""}
         <section class="app-panel">
             <div class="app-section-heading">
                 <h2>${admin ? "Data Keterlambatan" : "Data yang Saya Catat"}</h2>
@@ -528,22 +528,50 @@ function hChart(el, items) {
 }
 
 async function loadStats() {
-    const { data, error } = await supabase.rpc("get_dashboard_stats");
-    if (!$("stat-today")) return;
-    if (error || !data) {
-        showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
-        $("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
-        $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
+    if (isAdmin()) {
+        const { data, error } = await supabase.rpc("get_dashboard_stats");
+        if (!$("stat-today")) return;
+        if (error || !data) {
+            showMessage("overview-message", errText(error, "Statistik belum dapat dimuat."), "error");
+            if ($("weekly-chart")) $("weekly-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
+            if ($("class-chart")) $("class-chart").innerHTML = '<p class="app-empty">Statistik belum dapat dimuat.</p>';
+            return;
+        }
+        $("stat-today").textContent = num(data.today);
+        $("stat-week").textContent = num(data.week);
+        $("stat-month").textContent = num(data.month);
+        $("stat-total").textContent = num(data.total);
+        vChart($("weekly-chart"), (data.daily || []).map(r => ({
+            label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }),
+            count: Number(r.count)
+        })), true);
+        hChart($("class-chart"), (data.by_class || []).map(r => ({
+            label: r.label,
+            count: Number(r.count)
+        })));
         return;
     }
-    $("stat-today").textContent = num(data.today);
-    $("stat-week").textContent = num(data.week);
-    $("stat-month").textContent = num(data.month);
-    $("stat-total").textContent = num(data.total);
-    vChart($("weekly-chart"), (data.daily || []).map(r => ({
-        label: new Date(`${r.date}T12:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" }), count: Number(r.count)
-    })), true);
-    hChart($("class-chart"), (data.by_class || []).map(r => ({ label: r.label, count: Number(r.count) })));
+    const ranges = ["today", "week", "month", "all"];
+    const results = await Promise.all(ranges.map(p_range => supabase.rpc("list_late_records", {
+        p_search: "",
+        p_range,
+        p_limit: 1,
+        p_offset: 0
+    })));
+    if (!$("stat-today")) return;
+    const failed = results.find(result => result.error || !result.data);
+    if (failed) {
+        showMessage("overview-message", errText(failed.error, "Statistik belum dapat dimuat."), "error");
+        ["stat-today", "stat-week", "stat-month", "stat-total"].forEach(id => {
+            if ($(id)) $(id).textContent = "—";
+        });
+        return;
+    }
+    const counts = results.map(result => Number(result.data.total || 0));
+    $("stat-today").textContent = num(counts[0]);
+    $("stat-week").textContent = num(counts[1]);
+    $("stat-month").textContent = num(counts[2]);
+    $("stat-total").textContent = num(counts[3]);
 }
 
 async function loadLeaderboard() {
