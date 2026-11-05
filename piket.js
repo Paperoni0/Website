@@ -769,6 +769,18 @@ async function initialize() {
         if (event === "SIGNED_IN" && next?.user?.id === prevId) return;
         setTimeout(navigate, 0);
     });
+    const qs = new URLSearchParams(location.search);
+    const tokenHash = qs.get("token_hash");
+    if (tokenHash && qs.get("type") === "recovery") {
+        history.replaceState(null, "", `${location.pathname}#reset`);
+        const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: "recovery" });
+        if (error) {
+            flash = { text: "Tautan pemulihan tidak valid atau sudah kedaluwarsa. Silakan minta tautan baru.", type: "error" };
+            history.replaceState(null, "", `${location.pathname}#forgot`);
+        } else {
+            recovering = true;
+        }
+    }
     const { data } = await supabase.auth.getSession();
     session = data?.session || null;
     await navigate();
