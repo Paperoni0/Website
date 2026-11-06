@@ -118,6 +118,8 @@ a { color: inherit; }
     text-align: center;
     font-size: 12px;
     padding: 14px 16px;
+}
+.footer a {
     text-decoration: none;
 }
 .app-container {
