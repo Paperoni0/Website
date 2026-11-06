@@ -172,7 +172,7 @@ function renderOverview() {
     const admin = isAdmin();
     return `
     <section class="app-hero"><div class="app-container">
-        <h1 class="app-title">Dashboard Piket</h1><div class="app-double-line"></div>
+        <h1 class="app-title">${admin ? "Dashboard Admin Piket" : "Dashboard Piket"}</h1><div class="app-double-line"></div>
         <p class="app-hero-description">${admin ? "Ringkasan dan statistik data keterlambatan siswa." : "Statistik keterlambatan dan data yang Anda catat."}</p>
     </div></section>
     <main class="app-container app-page" style="min-height:0;padding-top:0">
