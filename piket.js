@@ -606,7 +606,10 @@ async function loadRecords() {
         <td>${esc(formatDateTime(r.created_at))}</td><td>${esc(r.ticket_id || "—")}</td><td>${esc(r.name || "—")}${r.is_osis ? ' <span class="osis-pill">OSIS</span>' : ""}</td>
         <td>${esc(r.class || "—")}</td><td><span class="app-record-note">${esc(r.reason || "—")}</span></td>
         ${isAdmin() ? `<td>${esc(r.recorder_name || "—")}</td>` : ""}
-        <td>${r.can_edit ? `<button type="button" class="app-button app-button-outline app-button-small edit-btn" data-id="${esc(r.id)}">Ubah</button>` : ""}</td></tr>`).join("")
+        <td>${r.can_edit ? `<div class="row-actions">
+            <button type="button" class="app-button app-button-outline app-button-small edit-btn" data-id="${esc(r.id)}">Ubah</button>
+            <button type="button" class="app-button app-button-danger app-button-small delete-btn" data-id="${esc(r.id)}">Hapus</button>
+        </div>` : ""}</td></tr>`).join("")
         : `<tr><td colspan="${cols}" class="app-empty">${rec.search || rec.range !== "all" ? "Tidak ada data yang cocok." : "Belum ada data keterlambatan."}</td></tr>`;
     const pages = Math.max(1, Math.ceil(rec.total / PAGE_SIZE));
     const from = rec.total ? rec.page * PAGE_SIZE + 1 : 0, to = Math.min(rec.total, (rec.page + 1) * PAGE_SIZE);
@@ -652,6 +655,39 @@ function closeEdit() {
     editing.modal.remove();
     document.body.style.overflow = "";
     editing = null;
+}
+
+function openDelete(row) {
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.innerHTML = `
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="del-title">
+        <h2 id="del-title" class="app-panel-title">Hapus Data?</h2><div class="app-double-line"></div>
+        <p style="margin-bottom:16px">Data keterlambatan <b>${esc(row.name || "—")}</b> (${esc(row.class || "—")}) pada tiket ${esc(row.ticket_id || "—")}, ${esc(formatDateTime(row.created_at))}, akan dihapus permanen.</p>
+        <div id="edit-message" class="app-message" hidden></div>
+        <div class="app-button-row">
+            <button type="button" class="app-button app-button-outline" data-close>Batal</button>
+            <button type="button" class="app-button app-button-danger" id="delete-confirm">Ya, Hapus</button>
+        </div>
+    </div>`;
+    document.body.append(modal);
+    document.body.style.overflow = "hidden";
+    editing = { row, picker: null, modal };
+}
+
+async function confirmDelete(btn) {
+    if (!editing) return;
+    setBusy(btn, true, "Menghapus...");
+    const { error } = await supabase.rpc("delete_late_record", { p_id: String(editing.row.id) });
+    if (error) {
+        showMessage("edit-message", errText(error, "Data gagal dihapus. Silakan coba lagi."), "error");
+        setBusy(btn, false);
+        return;
+    }
+    closeEdit();
+    toast("Data dihapus.");
+    if (rec.rows.length === 1 && rec.page > 0) rec.page--;
+    loadOverview();
 }
 
 async function handleSubmit(event) {
@@ -726,10 +762,11 @@ async function handleClick(event) {
     if (t.classList?.contains("modal")) return closeEdit();
     const el = t.closest("button, a");
     if (!el) return;
-
     if (el.id === "logout-button") { el.disabled = true; const { error } = await supabase.auth.signOut(); if (error) { el.disabled = false; toast("Gagal keluar. Silakan coba lagi.", "error"); } return; }
     if (el.matches("[data-close]")) return closeEdit();
     if (el.classList.contains("edit-btn")) { const row = rec.rows.find(r => String(r.id) === el.dataset.id); if (row) openEdit(row); return; }
+    if (el.classList.contains("delete-btn")) { const row = rec.rows.find(r => String(r.id) === el.dataset.id); if (row) openDelete(row); return; }
+    if (el.id === "delete-confirm") return confirmDelete(el);
     if (el.id === "btn-switch") return switchCamera();
     if (el.id === "btn-torch") return toggleTorch();
     if (el.id === "rescan-button" || el.id === "next-scan-button") { currentTicket = null; return navigate(); }
