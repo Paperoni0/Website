@@ -270,7 +270,6 @@ function setHeader() {
     const name = profile?.name || user?.email || "Petugas";
     const url = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
     $("account-name").textContent = name;
-    $("account-menu-name").textContent = name;
     $("account-email").textContent = user?.email || "";
     const av = $("account-avatar");
     av.innerHTML = url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">` : esc(initials(name));
