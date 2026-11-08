@@ -31,8 +31,16 @@
                 </ul>
             </nav>
             <div class="header-account" id="header-account" hidden>
-                <span id="account-name"></span>
-                <button type="button" id="logout-button" class="logout-button">Keluar</button>
+                <button type="button" id="account-toggle" class="account-toggle" aria-haspopup="menu" aria-expanded="false" aria-label="Menu akun">
+                    <span class="account-avatar" id="account-avatar"></span>
+                </button>
+                <div class="account-menu" id="account-menu" role="menu" hidden>
+                    <div class="account-info"><b id="account-name"></b><small id="account-email"></small></div>
+                    <ul>
+                        <li><a href="#settings" role="menuitem">Pengaturan</a></li>
+                        <li><button type="button" id="logout-button" role="menuitem">Keluar</button></li>
+                    </ul>
+                </div>
             </div>
         </div>
     </header>
