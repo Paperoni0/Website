@@ -283,8 +283,8 @@ const ROUTES = ["login", "forgot", "reset", "scan", "overview", "settings"];
 const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null, "", `#${r}`); };
 
 async function getProfile() {
-    if (profile && profile.id === session.user.id) return profile; // cached: no DB hit on every page change
-    const { data, error } = await supabase.from("accounts").select("id,name,role,active").eq("id", session.user.id).single();
+    if (profile && profile.id === session.user.id) return profile;
+    const { data, error } = await supabase.from("accounts").select("id,name,role,active,picture").eq("id", session.user.id).single();
     if (error || !data) throw new UserError("Akun tidak memiliki akses ke sistem.");
     if (!data.active) throw new UserError("Akun ini dinonaktifkan. Hubungi administrator.");
     return data;
