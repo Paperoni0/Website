@@ -268,7 +268,7 @@ function setHeader() {
     $("header-account").hidden = !session;
     const user = session?.user;
     const name = profile?.name || user?.email || "Petugas";
-    const url = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+    const url = profile?.picture || user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
     $("account-name").textContent = name;
     $("account-email").textContent = user?.email || "";
     const av = $("account-avatar");
