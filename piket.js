@@ -227,16 +227,60 @@ function renderOverview() {
     </main>`;
 }
 
+function renderSettings() {
+    const u = session.user;
+    return `
+    <section class="app-hero"><div class="app-container">
+        <h1 class="app-title">Pengaturan</h1><div class="app-double-line"></div>
+        <p class="app-hero-description">Informasi akun dan keamanan.</p>
+    </div></section>
+    <main class="app-container app-narrow app-scan-main">
+        <section class="app-panel">
+            <h2 class="app-panel-title">Akun</h2><div class="app-double-line"></div>
+            <div class="app-table-wrap"><table class="app-table"><tbody>
+                <tr><th>Nama</th><td>${esc(profile?.name || "—")}</td></tr>
+                <tr><th>Email</th><td>${esc(u.email || "—")}</td></tr>
+                <tr><th>Peran</th><td>${isAdmin() ? "Admin" : "Petugas"}</td></tr>
+            </tbody></table></div>
+        </section>
+        <section class="app-panel">
+            <h2 class="app-panel-title">Ganti Password</h2><div class="app-double-line"></div>
+            ${msgBox("password-message")}
+            <form id="password-form">
+                <div class="app-form-group"><label for="pw-new">Password baru <span class="app-required">*</span></label>
+                    <input type="password" id="pw-new" name="password" minlength="8" required autocomplete="new-password"></div>
+                <div class="app-form-group"><label for="pw-confirm">Ulangi password <span class="app-required">*</span></label>
+                    <input type="password" id="pw-confirm" name="confirm" minlength="8" required autocomplete="new-password"></div>
+                <button type="submit" class="app-button app-button-primary app-button-full">Simpan Password</button>
+            </form>
+        </section>
+    </main>`;
+}
+
+function closeAccountMenu() {
+    $("account-menu").hidden = true;
+    $("account-toggle").setAttribute("aria-expanded", "false");
+}
+
 function setHeader() {
     document.querySelectorAll(".auth-link").forEach(el => { el.hidden = !session; });
     document.querySelectorAll(".guest-link").forEach(el => { el.hidden = !!session; });
     $("header-account").hidden = !session;
-    $("account-name").textContent = profile?.name || session?.user?.email || "Petugas";
+    const user = session?.user;
+    const name = profile?.name || user?.email || "Petugas";
+    const url = user?.user_metadata?.avatar_url || user?.user_metadata?.picture;
+    $("account-name").textContent = name;
+    $("account-menu-name").textContent = name;
+    $("account-email").textContent = user?.email || "";
+    const av = $("account-avatar");
+    av.innerHTML = url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">` : esc(initials(name));
+    av.querySelector("img")?.addEventListener("error", () => { av.textContent = initials(name); }, { once: true });
+    closeAccountMenu();
     $("menu-toggle").checked = false;
 }
 
 const PUBLIC_ROUTES = ["login", "forgot"];
-const ROUTES = ["login", "forgot", "reset", "scan", "overview"];
+const ROUTES = ["login", "forgot", "reset", "scan", "overview", "settings"];
 const setHash = r => { if (location.hash !== `#${r}`) history.replaceState(null, "", `#${r}`); };
 
 async function getProfile() {
@@ -282,7 +326,9 @@ async function navigate() {
         Object.assign(rec, { search: "", range: "all", page: 0, total: 0, rows: [] });
         page.innerHTML = renderOverview();
         loadOverview();
-    } else {
+    }
+    else if (route === "settings") page.innerHTML = renderSettings();
+    else {
         currentTicket = null;
         scanPicker = null;
         page.innerHTML = renderScan();
@@ -739,6 +785,19 @@ async function handleSubmit(event) {
         return;
     }
 
+    if (form.id === "password-form") {
+        const pw = String(fd.get("password")), confirm = String(fd.get("confirm"));
+        if (pw.length < 8) return showMessage("password-message", "Password minimal 8 karakter.", "error");
+        if (pw !== confirm) return showMessage("password-message", "Kedua password tidak sama.", "error");
+        setBusy(button, true, "Menyimpan...");
+        const { error } = await supabase.auth.updateUser({ password: pw });
+        setBusy(button, false);
+        if (error) return showMessage("password-message", /different|same/i.test(error.message) ? "Password baru harus berbeda dari password lama." : errText(error, "Password gagal diubah. Silakan coba lagi."), "error");
+        form.reset();
+        showMessage("password-message", "Password berhasil diubah.", "success");
+        return;
+    }
+
     if (form.id === "edit-form" && editing) {
         const reason = $("edit-reason").value.trim();
         if (reason.length < 3) return showMessage("edit-message", "Alasan minimal 3 karakter.", "error");
@@ -758,10 +817,18 @@ async function handleSubmit(event) {
 
 async function handleClick(event) {
     const t = event.target;
+    if (!t.closest?.("#header-account")) closeAccountMenu();
     if (openPicker && !openPicker.root.contains(t)) openPicker.close();
     if (t.classList?.contains("modal")) return closeEdit();
     const el = t.closest("button, a");
     if (!el) return;
+    if (el.id === "account-toggle") {
+        const open = $("account-menu").hidden;
+        $("account-menu").hidden = !open;
+        el.setAttribute("aria-expanded", String(open));
+        return;
+    }
+    if (el.matches(".account-menu a")) closeAccountMenu();
     if (el.id === "logout-button") { el.disabled = true; const { error } = await supabase.auth.signOut(); if (error) { el.disabled = false; toast("Gagal keluar. Silakan coba lagi.", "error"); } return; }
     if (el.matches("[data-close]")) return closeEdit();
     if (el.classList.contains("edit-btn")) { const row = rec.rows.find(r => String(r.id) === el.dataset.id); if (row) openEdit(row); return; }
@@ -786,7 +853,10 @@ page.addEventListener("change", e => {
 });
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
-document.addEventListener("keydown", e => { if (e.key === "Escape" && editing) closeEdit(); });
+document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if (editing) closeEdit(); else closeAccountMenu();
+});
 window.addEventListener("hashchange", navigate);
 
 async function initialize() {
