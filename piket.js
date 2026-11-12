@@ -429,41 +429,57 @@ function loadQrLib() {
 
 const videoTrack = () => document.querySelector("#reader video")?.srcObject?.getVideoTracks?.()[0];
 const setStatus = html => { const el = $("camera-status"); if (el) el.innerHTML = html; };
+let facing = "environment", camBusy = false;
 
-async function startScanner(deviceId) {
-    if (!$("reader")) return;
+async function startScanner() {
+    if (!$("reader") || camBusy) return;
+    camBusy = true;
     try {
         await loadQrLib();
         if (!$("reader")) return;
-        scanner = new Html5Qrcode("reader", { verbose: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], useBarCodeDetectorIfSupported: true });
-        const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" };
-        await scanner.start(source, { fps: 10, aspectRatio: 1 }, onDecode, () => {});
+        scanner = new Html5Qrcode("reader", {
+            verbose: false,
+            formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+            useBarCodeDetectorIfSupported: true
+        });
+        try {
+            await scanner.start({ facingMode: facing }, { fps: 10 }, onDecode, () => {});
+        } catch (e) {
+            if (e?.name !== "OverconstrainedError" && e?.name !== "NotFoundError") throw e;
+            facing = facing === "environment" ? "user" : "environment";
+            await scanner.start({ facingMode: facing }, { fps: 10 }, onDecode, () => {});
+        }
         cameraRunning = true;
         setStatus(CAM_READY);
-        setTimeout(setupControls, 600);
+        const btn = $("btn-torch");
+        if (btn) btn.hidden = !videoTrack()?.getCapabilities?.().torch;
     } catch (error) {
         console.error(error);
         scanner = null; cameraRunning = false;
         setStatus("Kamera tidak aktif.");
         showMessage("scan-message", error instanceof UserError ? error.message : "Kamera tidak dapat diakses. Izinkan akses kamera pada browser, lalu muat ulang halaman.", "error");
-    }
+    } finally { camBusy = false; }
 }
-
-async function setupControls() {
-    const btn = $("btn-torch");
-    if (!btn) return;
-    btn.hidden = !videoTrack()?.getCapabilities?.().torch;
-    try { cameras = await Html5Qrcode.getCameras(); } catch { cameras = []; }
-}
-let cameras = [];
 
 async function stopScanner() {
     scanBusy = false; torchOn = false;
     const s = scanner;
     scanner = null; cameraRunning = false;
+    document.querySelectorAll("#reader video").forEach(v => v.srcObject?.getTracks?.().forEach(t => t.stop()));
     if (!s) return;
     try { await s.stop(); } catch (e) { /* already stopped */ }
     try { s.clear(); } catch (e) { /* ignore */ }
+}
+
+async function switchCamera() {
+    if (camBusy) return;
+    facing = facing === "environment" ? "user" : "environment";
+    await stopScanner();
+    const torch = $("btn-torch");
+    if (torch) { torch.hidden = true; torch.classList.remove("active"); torch.textContent = "Senter"; }
+    setStatus('<i class="app-dot"></i> Mengganti kamera...');
+    await new Promise(r => setTimeout(r, 300));
+    await startScanner();
 }
 
 function scanError(key, text) {
@@ -506,16 +522,6 @@ function showRecordPanel() {
     const classes = [...new Set(students.map(s => s.class).filter(Boolean))].sort((a, b) => a.localeCompare(b, "id", { numeric: true }));
     $("student-class").innerHTML = `<option value="">Semua kelas</option>${classes.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}`;
     scanPicker = createPicker($("student-picker"), { getClass: () => $("student-class").value });
-}
-
-async function switchCamera() {
-    if (cameras.length < 2) return toast("Perangkat ini hanya memiliki satu kamera.");
-    const current = videoTrack()?.getSettings?.().deviceId;
-    const next = cameras[(Math.max(cameras.findIndex(c => c.id === current), 0) + 1) % cameras.length].id;
-    await stopScanner();
-    setStatus('<i class="app-dot"></i> Mengganti kamera...');
-    $("btn-torch") && ($("btn-torch").hidden = true);
-    await startScanner(next);
 }
 
 async function toggleTorch() {
